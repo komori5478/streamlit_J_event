@@ -26,7 +26,6 @@ st.markdown("""
 @st.cache_data
 def load_data(file):
     xl = pd.ExcelFile(file)
-    sheet_names = xl.sheet_names
 
     df_team = pd.read_excel(xl, sheet_name='全試合データ_チーム', header=0)
     df_player = pd.read_excel(xl, sheet_name='全試合データ_選手', header=0)
@@ -39,80 +38,84 @@ def load_data(file):
 
     extra = {}
 
-    # AE・DE
-    if 'AE・DE' in sheet_names:
-        df_ae = pd.read_excel(xl, sheet_name='AE・DE', header=None)
-        ae_rows = []
-        group_map = {
-            2:'East A',3:'East A',4:'East A',5:'East A',6:'East A',7:'East A',8:'East A',9:'East A',10:'East A',11:'East A',
-            14:'East B',15:'East B',16:'East B',17:'East B',18:'East B',19:'East B',20:'East B',21:'East B',22:'East B',23:'East B',
-            26:'West A',27:'West A',28:'West A',29:'West A',30:'West A',31:'West A',32:'West A',33:'West A',34:'West A',35:'West A',
-            38:'West B',39:'West B',40:'West B',41:'West B',42:'West B',43:'West B',44:'West B',45:'West B',46:'West B',47:'West B'
-        }
-        for idx, group in group_map.items():
-            if idx >= len(df_ae): continue
-            row = df_ae.iloc[idx]
-            try:
-                ae_rows.append({
-                    'グループ': group, 'リーグ順位': row[2], 'チーム名': str(row[3]),
-                    '得点': pd.to_numeric(row[5], errors='coerce'),
-                    '失点': pd.to_numeric(row[7], errors='coerce'),
-                    'xG': pd.to_numeric(row[9], errors='coerce'),
-                    'GOAL-xG': pd.to_numeric(row[11], errors='coerce'),
-                    'xG/試合': pd.to_numeric(row[13], errors='coerce'),
-                    'xGA': pd.to_numeric(row[15], errors='coerce'),
-                    '失点-xGA': pd.to_numeric(row[17], errors='coerce'),
-                    'xGA/試合': pd.to_numeric(row[19], errors='coerce'),
-                    'AE': pd.to_numeric(row[21], errors='coerce'),
-                    'DE': pd.to_numeric(row[23], errors='coerce'),
-                    'AE-DE': pd.to_numeric(row[25], errors='coerce'),
-                })
-            except: pass
-        extra['ae_de'] = pd.DataFrame(ae_rows)
+    # ===== AE・DE をイベントデータから計算 =====
+    # 相手チームのxGを自チームのxGAとして結合
+    df_xga = df_team[['節','チーム名','相手チーム名','xG']].copy()
+    df_xga = df_xga.rename(columns={'チーム名':'相手チーム名', '相手チーム名':'チーム名', 'xG':'xGA'})
+    df_with_xga = df_team.merge(df_xga[['節','チーム名','xGA']], on=['節','チーム名'], how='left')
 
-    # グループ別行インデックス
-    group_rows = {'East A':(2,11),'East B':(14,23),'West A':(26,35),'West B':(38,47)}
+    ae_agg = df_with_xga.groupby('チーム名').agg(
+        試合数=('節','count'),
+        得点=('得点','sum'),
+        失点=('失点','sum'),
+        xG=('xG','sum'),
+        xGA=('xGA','sum'),
+    ).reset_index()
 
-    def parse_group_sheet(sheet, cols, col_names):
-        if sheet not in sheet_names: return pd.DataFrame()
-        df = pd.read_excel(xl, sheet_name=sheet, header=None)
-        rows = []
-        for group, (r1, r2) in group_rows.items():
-            for i in range(r1, min(r2+1, len(df))):
-                row = df.iloc[i]
-                team = row[cols[0]]
-                if pd.isna(team) or str(team) in ['nan','NaN','East A','East B','West A','West B']: continue
-                d = {'グループ': group, 'チーム名': str(team)}
-                for col, name in zip(cols[1:], col_names[1:]):
-                    try: d[name] = pd.to_numeric(row[col], errors='coerce')
-                    except: d[name] = None
-                rows.append(d)
-        return pd.DataFrame(rows)
+    ae_agg['GOAL-xG']  = ae_agg['得点']  - ae_agg['xG']
+    ae_agg['失点-xGA'] = ae_agg['失点']  - ae_agg['xGA']
+    ae_agg['xG/試合']  = ae_agg['xG']   / ae_agg['試合数']
+    ae_agg['xGA/試合'] = ae_agg['xGA']  / ae_agg['試合数']
+    # AE = 得点/xG, DE = xGA/失点（失点0のチームはNaN）
+    ae_agg['AE']    = ae_agg['得点']  / ae_agg['xG'].replace(0, np.nan)
+    ae_agg['DE']    = ae_agg['xGA']   / ae_agg['失点'].replace(0, np.nan)
+    ae_agg['AE-DE'] = ae_agg['AE']   - ae_agg['DE']
 
-    extra['shot']    = parse_group_sheet('Shot',   [3,5,7,9,11,13,15,17], ['チーム名','得点','シュート','決定率','枠内','枠内率','OP得点','SP得点'])
-    extra['a_shot']  = parse_group_sheet('A-Shot', [3,5,7,9,11,13,15,17], ['チーム名','失点','被シュート','被決定率','被枠内','被枠内率','OP失点','SP失点'])
-    extra['box']     = parse_group_sheet('BOX',    [3,4,6,8,10,14,16,18,29,31], ['チーム名','PA進入合計','PA進入0-15','PA進入16-30','PA進入31-45','PA進入46-60','PA進入61-75','PA進入76-90','NZ総数','NZ/試合'])
-    extra['a_box']   = parse_group_sheet('A-BOX',  [3,4,6,8,10,14,16,18,29,31], ['チーム名','被PA進入合計','被PA進入0-15','被PA進入16-30','被PA進入31-45','被PA進入46-60','被PA進入61-75','被PA進入76-90','被NZ総数','被NZ/試合'])
-    extra['pass_df'] = parse_group_sheet('Pass',   [1,2,4,6,8,12,14,18,20,24,26,28,30], ['チーム名','パス総数','1試合平均','DTパス','DT成功率','MTパス','MT成功率','ATパス','AT成功率','ショートパス','ショート成功率','ミドルパス','ミドル成功率'])
-    extra['cross_df']= parse_group_sheet('Cross',  [1,2,4,6,8,10,12,14,16,18,20,22,24,26], ['チーム名','クロス総数','1試合平均','成功数','成功率','右クロス','右成功数','左クロス','左成功数','PA内クロス','PA内成功数','PA内成功率','クロスシュート','クロス得点'])
-    extra['def_df']  = parse_group_sheet('Defencive',[1,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30], ['チーム名','タックル総数','奪取率','DTタックル','DT奪取率','MTタックル','MT奪取率','ATタックル','AT奪取率','ATMT合計','クリア','PA内クリア','ブロック','シュートブロック','インターセプト','こぼれ球奪取'])
+    extra['ae_de'] = ae_agg
 
-    # APT
-    if 'APT' in sheet_names:
-        df_apt = pd.read_excel(xl, sheet_name='APT', header=None)
-        apt_group_rows = {'East A':(2,11),'East B':(13,22),'West A':(24,33),'West B':(35,44)}
-        apt_rows = []
-        for group, (r1, r2) in apt_group_rows.items():
-            for i in range(r1, min(r2+1, len(df_apt))):
-                row = df_apt.iloc[i]
-                team = row[1]
-                if pd.isna(team) or str(team) in ['nan','East A','East B','West A','West B']: continue
-                apt_rows.append({
-                    'グループ': group, 'チーム名': str(team),
-                    '保持率': pd.to_numeric(row[2], errors='coerce'),
-                    '相手陣保持割合': pd.to_numeric(row[8], errors='coerce'),
-                })
-        extra['apt'] = pd.DataFrame(apt_rows)
+    # ===== その他集計もイベントデータから =====
+    # シュート詳細
+    shot_cols = ['チーム名','得点','シュート','枠内シュート','xG','PA内シュート','PA外シュート','PA内ゴール','PA外ゴール']
+    available = [c for c in shot_cols if c in df_team.columns]
+    shot_agg = df_team.groupby('チーム名')[available[1:]].sum().reset_index()
+    shot_agg.columns = ['チーム名'] + available[1:]
+    shot_agg['決定率'] = shot_agg['得点'] / shot_agg['シュート'].replace(0, np.nan)
+    shot_agg['枠内率'] = shot_agg['枠内シュート'] / shot_agg['シュート'].replace(0, np.nan)
+    extra['shot'] = shot_agg
+
+    # 被シュート（相手側のシュートデータを結合）
+    df_opp = df_team[['節','チーム名','相手チーム名','シュート','枠内シュート','xG','得点']].copy()
+    df_opp = df_opp.rename(columns={
+        'チーム名':'相手チーム名','相手チーム名':'チーム名',
+        'シュート':'被シュート','枠内シュート':'被枠内シュート','xG':'xGA_match','得点':'失点_check'
+    })
+    a_shot_agg = df_opp.groupby('チーム名').agg(
+        被シュート=('被シュート','sum'),
+        被枠内シュート=('被枠内シュート','sum'),
+    ).reset_index()
+    a_shot_agg['被枠内率'] = a_shot_agg['被枠内シュート'] / a_shot_agg['被シュート'].replace(0, np.nan)
+    extra['a_shot'] = a_shot_agg
+
+    # PA進入
+    box_cols = [c for c in df_team.columns if 'PA' in c or 'ニアゾーン' in c]
+    if box_cols:
+        box_agg = df_team.groupby('チーム名')[box_cols].sum().reset_index()
+        extra['box'] = box_agg
+
+    # パス詳細
+    pass_cols = [c for c in df_team.columns if 'パス' in c]
+    if pass_cols:
+        pass_agg = df_team.groupby('チーム名')[pass_cols].sum().reset_index()
+        extra['pass_df'] = pass_agg
+
+    # クロス詳細
+    cross_cols = [c for c in df_team.columns if 'クロス' in c]
+    if cross_cols:
+        cross_agg = df_team.groupby('チーム名')[cross_cols].sum().reset_index()
+        extra['cross_df'] = cross_agg
+
+    # 守備詳細
+    def_cols = [c for c in df_team.columns if any(k in c for k in ['タックル','クリア','ブロック','インターセプト','こぼれ球'])]
+    if def_cols:
+        def_agg = df_team.groupby('チーム名')[def_cols].sum().reset_index()
+        extra['def_df'] = def_agg
+
+    # ボール保持率
+    if 'ボール保持率' in df_team.columns:
+        apt_agg = df_team.groupby('チーム名').agg(
+            保持率=('ボール保持率','mean'),
+        ).reset_index()
+        extra['apt'] = apt_agg
 
     return df_team, df_player, extra
 
@@ -591,40 +594,37 @@ with tab6:
 
     df_ae = extra.get('ae_de', pd.DataFrame())
     if df_ae.empty:
-        st.warning("AE・DEシートが見つかりません。2026_J2J3.xlsxをアップロードしてください。")
+        st.warning("データが見つかりません。")
     else:
-        groups = ['East A', 'East B', 'West A', 'West B']
-        sel_groups = st.multiselect("グループを選択", groups, default=groups)
-        df_ae_f = df_ae[df_ae['グループ'].isin(sel_groups)].copy()
+        # チームフィルター（サイドバーのselected_teamsを使用）
+        df_ae_f = df_ae[df_ae['チーム名'].isin(selected_teams)].copy() if selected_teams else df_ae.copy()
 
         col1, col2 = st.columns(2)
         with col1:
-            # AE vs DE 散布図
             fig = px.scatter(
                 df_ae_f, x='AE', y='DE',
-                color='グループ', text='チーム名',
-                size='得点', hover_data=['xG','xGA','AE-DE'],
+                text='チーム名',
+                size='得点',
+                hover_data=['xG','xGA','AE-DE','得点','失点'],
                 title='AE vs DE マップ（右上＝攻守ともに効率的）',
                 labels={'AE':'攻撃効率(AE)','DE':'守備効率(DE)'},
+                color='AE-DE', color_continuous_scale='RdYlGn',
                 height=500
             )
             fig.update_traces(textposition='top center')
-            # 基準線
             fig.add_hline(y=1, line_dash='dash', line_color='gray', opacity=0.5)
             fig.add_vline(x=1, line_dash='dash', line_color='gray', opacity=0.5)
-            fig.add_annotation(x=1.6, y=1.7, text="攻守効率↑", showarrow=False, font=dict(color='green'))
-            fig.add_annotation(x=0.5, y=0.5, text="攻守効率↓", showarrow=False, font=dict(color='red'))
+            fig.add_annotation(x=df_ae_f['AE'].max(), y=df_ae_f['DE'].max(), text="攻守効率↑", showarrow=False, font=dict(color='green'))
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # AE-DE バーチャート
             df_ae_sorted = df_ae_f.sort_values('AE-DE', ascending=True)
-            df_ae_sorted['色'] = df_ae_sorted['AE-DE'].apply(lambda x: 'positive' if x >= 0 else 'negative')
+            df_ae_sorted['色'] = df_ae_sorted['AE-DE'].apply(lambda x: 'プラス（攻撃偏重）' if x >= 0 else 'マイナス（守備偏重）')
             fig2 = px.bar(
                 df_ae_sorted, x='AE-DE', y='チーム名',
                 orientation='h', color='色',
-                color_discrete_map={'positive':'#2ecc71','negative':'#e74c3c'},
-                title='AE-DE（プラス＝攻撃偏重、マイナス＝守備偏重）',
+                color_discrete_map={'プラス（攻撃偏重）':'#2ecc71','マイナス（守備偏重）':'#e74c3c'},
+                title='AE-DE（プラス＝攻撃で稼ぐ、マイナス＝守備で耐える）',
                 height=500
             )
             fig2.add_vline(x=0, line_color='white', line_width=1)
@@ -633,10 +633,10 @@ with tab6:
         st.markdown("---")
         col1, col2 = st.columns(2)
         with col1:
-            # xG vs 得点
             fig3 = px.scatter(
                 df_ae_f, x='xG', y='得点',
-                color='グループ', text='チーム名',
+                text='チーム名', color='AE',
+                color_continuous_scale='RdYlGn',
                 title='xG vs 実得点（対角線より上＝xG以上に得点）',
                 height=420
             )
@@ -646,11 +646,11 @@ with tab6:
             st.plotly_chart(fig3, use_container_width=True)
 
         with col2:
-            # xGA vs 失点
             fig4 = px.scatter(
                 df_ae_f, x='xGA', y='失点',
-                color='グループ', text='チーム名',
-                title='xGA vs 実失点（対角線より下＝xGA以上に守れている）',
+                text='チーム名', color='DE',
+                color_continuous_scale='RdYlGn_r',
+                title='xGA vs 実失点（対角線より下＝xGAより少ない失点）',
                 height=420
             )
             fig4.update_traces(textposition='top center')
@@ -658,16 +658,16 @@ with tab6:
             fig4.add_shape(type='line', x0=0, y0=0, x1=max_v2, y1=max_v2, line=dict(dash='dash', color='gray'))
             st.plotly_chart(fig4, use_container_width=True)
 
-        # データテーブル
         st.markdown("### 📋 AE・DEデータ一覧")
-        display_cols = ['グループ','チーム名','得点','失点','xG','GOAL-xG','xGA','失点-xGA','AE','DE','AE-DE']
-        df_show = df_ae_f[display_cols].sort_values(['グループ','AE-DE'], ascending=[True,False])
+        display_cols = ['チーム名','試合数','得点','失点','xG','GOAL-xG','xGA','失点-xGA','AE','DE','AE-DE']
+        available_cols = [c for c in display_cols if c in df_ae_f.columns]
+        df_show = df_ae_f[available_cols].sort_values('AE-DE', ascending=False).reset_index(drop=True)
+        fmt = {c: '{:.3f}' for c in ['AE','DE','AE-DE','xG','xGA','GOAL-xG','失点-xGA','xG/試合','xGA/試合'] if c in df_show.columns}
         st.dataframe(
             df_show.style
-            .background_gradient(subset=['AE'], cmap='RdYlGn')
-            .background_gradient(subset=['DE'], cmap='RdYlGn')
-            .format({'AE':'{:.3f}','DE':'{:.3f}','AE-DE':'{:.3f}','xG':'{:.2f}','xGA':'{:.2f}',
-                     'GOAL-xG':'{:.2f}','失点-xGA':'{:.2f}'}),
+            .background_gradient(subset=['AE'] if 'AE' in df_show.columns else [], cmap='RdYlGn')
+            .background_gradient(subset=['DE'] if 'DE' in df_show.columns else [], cmap='RdYlGn')
+            .format(fmt),
             use_container_width=True
         )
 
@@ -675,66 +675,54 @@ with tab6:
 with tab7:
     st.markdown("## 📦 PA進入・ニアゾーン進入分析")
 
-    df_box   = extra.get('box', pd.DataFrame())
-    df_a_box = extra.get('a_box', pd.DataFrame())
-
+    df_box = extra.get('box', pd.DataFrame())
     if df_box.empty:
-        st.warning("BOX/A-BOXシートが見つかりません。")
+        st.warning("PA進入データが見つかりません。")
     else:
-        groups = ['East A', 'East B', 'West A', 'West B']
-        sel_g = st.multiselect("グループを選択", groups, default=groups, key='box_group')
-        df_box_f   = df_box[df_box['グループ'].isin(sel_g)].copy()
-        df_a_box_f = df_a_box[df_a_box['グループ'].isin(sel_g)].copy()
+        df_box_f = df_box[df_box['チーム名'].isin(selected_teams)].copy() if selected_teams else df_box.copy()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            fig = px.bar(
-                df_box_f.sort_values('PA進入合計', ascending=True),
-                x='PA進入合計', y='チーム名', orientation='h',
-                color='グループ', title='PA進入合計（攻撃）',
-                height=max(400, len(df_box_f)*22)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        # PA進入関連列の特定
+        pa_total_col = [c for c in df_box_f.columns if 'PA内シュート' in c or 'PA進入' in c]
+        nz_col = [c for c in df_box_f.columns if 'ニアゾーン' in c]
 
-        with col2:
-            fig2 = px.bar(
-                df_a_box_f.sort_values('被PA進入合計', ascending=False),
-                x='被PA進入合計', y='チーム名', orientation='h',
-                color='グループ', title='被PA進入合計（守備）←少ないほど良い',
-                height=max(400, len(df_a_box_f)*22)
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+        if pa_total_col:
+            pa_col = pa_total_col[0]
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = px.bar(
+                    df_box_f.sort_values(pa_col, ascending=True),
+                    x=pa_col, y='チーム名', orientation='h',
+                    color=pa_col, color_continuous_scale='Blues',
+                    title=f'{pa_col}ランキング（攻撃）',
+                    height=max(400, len(df_box_f)*22)
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("---")
-        # PA進入 vs 被PA進入 散布図
-        merged = df_box_f[['チーム名','グループ','PA進入合計','NZ総数']].merge(
-            df_a_box_f[['チーム名','被PA進入合計','被NZ総数']], on='チーム名', how='inner')
-        fig3 = px.scatter(
-            merged, x='PA進入合計', y='被PA進入合計',
-            color='グループ', text='チーム名',
-            title='PA進入 vs 被PA進入（左下＝攻守バランス良、右上＝攻守ともに多い）',
-            size='NZ総数', height=480
-        )
-        fig3.update_traces(textposition='top center')
-        st.plotly_chart(fig3, use_container_width=True)
+            with col2:
+                if nz_col:
+                    nz = nz_col[0]
+                    fig2 = px.scatter(
+                        df_box_f, x=pa_col, y=nz,
+                        text='チーム名', color=pa_col,
+                        color_continuous_scale='Viridis',
+                        title=f'{pa_col} vs {nz}',
+                        height=max(400, len(df_box_f)*22)
+                    )
+                    fig2.update_traces(textposition='top center')
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    # PA内外シュート比較
+                    pa_in = [c for c in df_box_f.columns if 'PA内シュート' in c]
+                    pa_out = [c for c in df_box_f.columns if 'PA外シュート' in c]
+                    if pa_in and pa_out:
+                        fig2 = go.Figure()
+                        fig2.add_trace(go.Bar(name='PA内シュート', x=df_box_f['チーム名'], y=df_box_f[pa_in[0]], marker_color='#2196F3'))
+                        fig2.add_trace(go.Bar(name='PA外シュート', x=df_box_f['チーム名'], y=df_box_f[pa_out[0]], marker_color='#FF9800'))
+                        fig2.update_layout(barmode='stack', title='PA内外シュート比較', xaxis_tickangle=-45, height=400)
+                        st.plotly_chart(fig2, use_container_width=True)
 
-        # 時間帯別PA進入ヒートマップ（攻撃）
-        st.markdown("### ⏱️ 時間帯別PA進入ヒートマップ（攻撃）")
-        time_cols = ['PA進入0-15','PA進入16-30','PA進入31-45','PA進入46-60','PA進入61-75','PA進入76-90']
-        pivot = df_box_f.set_index('チーム名')[time_cols].fillna(0)
-        pivot.columns = ['0-15','16-30','31-45','46-60','61-75','76-90']
-        fig4 = px.imshow(pivot, color_continuous_scale='Blues',
-                         title='時間帯別PA進入数（攻撃）', aspect='auto', height=max(350, len(pivot)*22))
-        st.plotly_chart(fig4, use_container_width=True)
-
-        # 時間帯別被PA進入ヒートマップ（守備）
-        st.markdown("### ⏱️ 時間帯別PA進入ヒートマップ（守備）")
-        a_time_cols = ['被PA進入0-15','被PA進入16-30','被PA進入31-45','被PA進入46-60','被PA進入61-75','被PA進入76-90']
-        pivot2 = df_a_box_f.set_index('チーム名')[a_time_cols].fillna(0)
-        pivot2.columns = ['0-15','16-30','31-45','46-60','61-75','76-90']
-        fig5 = px.imshow(pivot2, color_continuous_scale='Reds',
-                         title='時間帯別被PA進入数（守備）', aspect='auto', height=max(350, len(pivot2)*22))
-        st.plotly_chart(fig5, use_container_width=True)
+        st.markdown("### 📋 PA関連データ一覧")
+        st.dataframe(df_box_f.reset_index(drop=True), use_container_width=True)
 
 # ===== タブ8: パス詳細 =====
 with tab8:
@@ -744,73 +732,62 @@ with tab8:
     df_apt  = extra.get('apt', pd.DataFrame())
 
     if df_pass.empty:
-        st.warning("Passシートが見つかりません。")
+        st.warning("パスデータが見つかりません。")
     else:
-        groups = ['East A', 'East B', 'West A', 'West B']
-        sel_g = st.multiselect("グループを選択", groups, default=groups, key='pass_group')
-        df_pass_f = df_pass[df_pass['グループ'].isin(sel_g)].copy()
+        df_pass_f = df_pass[df_pass['チーム名'].isin(selected_teams)].copy() if selected_teams else df_pass.copy()
 
         col1, col2 = st.columns(2)
         with col1:
             fig = px.bar(
                 df_pass_f.sort_values('パス総数', ascending=True),
                 x='パス総数', y='チーム名', orientation='h',
-                color='グループ', title='パス総数ランキング',
+                color='パス総数', color_continuous_scale='Blues',
+                title='パス総数ランキング',
                 height=max(400, len(df_pass_f)*22)
             )
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # パス総数 vs 1試合平均
-            fig2 = px.scatter(
-                df_pass_f, x='1試合平均', y='ショート成功率',
-                color='グループ', text='チーム名',
-                size='パス総数',
-                title='1試合平均パス数 vs ショートパス成功率',
-                height=420
+            if 'パス成功数' in df_pass_f.columns:
+                df_pass_f['パス成功率_calc'] = df_pass_f['パス成功数'] / df_pass_f['パス総数'].replace(0, np.nan)
+                fig2 = px.scatter(
+                    df_pass_f, x='パス総数', y='パス成功率_calc',
+                    text='チーム名', color='パス成功率_calc',
+                    color_continuous_scale='RdYlGn',
+                    title='パス総数 vs 成功率',
+                    height=420
+                )
+                fig2.update_traces(textposition='top center')
+                fig2.update_yaxes(tickformat='.1%')
+                st.plotly_chart(fig2, use_container_width=True)
+
+        dt_col = [c for c in df_pass_f.columns if c.startswith('DT') and 'パス' in c]
+        mt_col = [c for c in df_pass_f.columns if c.startswith('MT') and 'パス' in c]
+        at_col = [c for c in df_pass_f.columns if c.startswith('AT') and 'パス' in c]
+        if dt_col and mt_col and at_col:
+            st.markdown("### エリア別パス内訳")
+            area_df = df_pass_f[['チーム名', dt_col[0], mt_col[0], at_col[0]]].copy()
+            area_df.columns = ['チーム名', 'DT（守備）', 'MT（中盤）', 'AT（攻撃）']
+            area_data = area_df.melt(id_vars='チーム名', var_name='エリア', value_name='パス数')
+            fig3 = px.bar(area_data, x='チーム名', y='パス数', color='エリア',
+                          barmode='stack', title='エリア別パス数', height=420)
+            fig3.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig3, use_container_width=True)
+
+        if not df_apt.empty:
+            df_apt_f = df_apt[df_apt['チーム名'].isin(selected_teams)].copy() if selected_teams else df_apt.copy()
+            fig4 = px.bar(
+                df_apt_f.sort_values('保持率', ascending=True),
+                x='保持率', y='チーム名', orientation='h',
+                color='保持率', color_continuous_scale='Blues',
+                title='ボール保持率（平均）',
+                height=max(400, len(df_apt_f)*22)
             )
-            fig2.update_traces(textposition='top center')
-            st.plotly_chart(fig2, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("### エリア別パス内訳")
-        # DT/MT/ATパス内訳
-        area_cols = ['DTパス','MTパス','ATパス']
-        area_data = df_pass_f[['チーム名','グループ'] + area_cols].melt(
-            id_vars=['チーム名','グループ'], var_name='エリア', value_name='パス数')
-        fig3 = px.bar(area_data, x='チーム名', y='パス数', color='エリア',
-                      barmode='stack', title='エリア別パス数（DT=守備/MT=中盤/AT=攻撃）',
-                      height=420)
-        fig3.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig3, use_container_width=True)
-
-        st.markdown("### パス長さ別内訳")
-        len_cols = ['ショートパス','ミドルパス','ミドル成功率']
-        col1, col2 = st.columns(2)
-        with col1:
-            len_data = df_pass_f[['チーム名','グループ','ショートパス','ミドルパス']].melt(
-                id_vars=['チーム名','グループ'], var_name='種別', value_name='パス数')
-            fig4 = px.bar(len_data, x='チーム名', y='パス数', color='種別',
-                          barmode='group', title='ショート vs ミドルパス数',
-                          height=400)
-            fig4.update_layout(xaxis_tickangle=-45)
+            fig4.update_xaxes(tickformat='.1%')
             st.plotly_chart(fig4, use_container_width=True)
 
-        with col2:
-            if not df_apt.empty:
-                df_apt_f = df_apt[df_apt['グループ'].isin(sel_g)]
-                fig5 = px.bar(
-                    df_apt_f.sort_values('保持率', ascending=True),
-                    x='保持率', y='チーム名', orientation='h',
-                    color='グループ', title='ボール保持率',
-                    height=max(400, len(df_apt_f)*22)
-                )
-                fig5.update_xaxes(tickformat='.1%')
-                st.plotly_chart(fig5, use_container_width=True)
-
-        # データテーブル
         st.markdown("### 📋 パス詳細データ")
-        st.dataframe(df_pass_f.sort_values(['グループ','パス総数'], ascending=[True,False]).reset_index(drop=True), use_container_width=True)
+        st.dataframe(df_pass_f.sort_values('パス総数', ascending=False).reset_index(drop=True), use_container_width=True)
 
 # ===== タブ9: クロス分析 =====
 with tab9:
@@ -818,60 +795,46 @@ with tab9:
 
     df_cross = extra.get('cross_df', pd.DataFrame())
     if df_cross.empty:
-        st.warning("Crossシートが見つかりません。")
+        st.warning("クロスデータが見つかりません。")
     else:
-        groups = ['East A', 'East B', 'West A', 'West B']
-        sel_g = st.multiselect("グループを選択", groups, default=groups, key='cross_group')
-        df_cross_f = df_cross[df_cross['グループ'].isin(sel_g)].copy()
+        df_cross_f = df_cross[df_cross['チーム名'].isin(selected_teams)].copy() if selected_teams else df_cross.copy()
 
         col1, col2 = st.columns(2)
         with col1:
-            fig = px.scatter(
-                df_cross_f, x='クロス総数', y='成功率',
-                color='グループ', text='チーム名',
-                size='クロス得点',
-                title='クロス数 vs 成功率（バブル＝クロスからの得点数）',
-                height=450
-            )
-            fig.update_traces(textposition='top center')
-            st.plotly_chart(fig, use_container_width=True)
+            if 'クロス総数' in df_cross_f.columns and 'クロス成功数' in df_cross_f.columns:
+                df_cross_f['成功率_calc'] = df_cross_f['クロス成功数'] / df_cross_f['クロス総数'].replace(0, np.nan)
+                fig = px.scatter(
+                    df_cross_f, x='クロス総数', y='成功率_calc',
+                    text='チーム名', color='クロス総数',
+                    color_continuous_scale='Blues',
+                    title='クロス数 vs 成功率',
+                    height=450
+                )
+                fig.update_traces(textposition='top center')
+                fig.update_yaxes(tickformat='.1%')
+                st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # 右左クロス比較
-            side_data = df_cross_f[['チーム名','グループ','右クロス','左クロス']].melt(
-                id_vars=['チーム名','グループ'], var_name='サイド', value_name='クロス数')
-            fig2 = px.bar(side_data, x='チーム名', y='クロス数', color='サイド',
-                          barmode='group', title='左右サイドクロス比較',
-                          height=450)
-            fig2.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig2, use_container_width=True)
+            right_col = [c for c in df_cross_f.columns if '右' in c and 'クロス' in c and '成功' not in c]
+            left_col  = [c for c in df_cross_f.columns if '左' in c and 'クロス' in c and '成功' not in c]
+            if right_col and left_col:
+                side_data = df_cross_f[['チーム名', right_col[0], left_col[0]]].melt(id_vars='チーム名', var_name='サイド', value_name='クロス数')
+                fig2 = px.bar(side_data, x='チーム名', y='クロス数', color='サイド',
+                              barmode='group', title='左右サイドクロス比較', height=450)
+                fig2.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig2, use_container_width=True)
 
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            # クロス得点効率
-            df_cross_f['クロス得点率'] = df_cross_f['クロス得点'] / df_cross_f['クロス総数'].replace(0, np.nan)
-            fig3 = px.bar(
-                df_cross_f.sort_values('クロス得点率', ascending=True),
-                x='クロス得点率', y='チーム名', orientation='h',
-                color='グループ', title='クロスから得点になる確率',
-                height=max(400, len(df_cross_f)*22)
-            )
-            fig3.update_xaxes(tickformat='.1%')
-            st.plotly_chart(fig3, use_container_width=True)
-
-        with col2:
-            # PA内クロス成功率
-            fig4 = px.bar(
-                df_cross_f.sort_values('PA内成功率', ascending=True),
-                x='PA内成功率', y='チーム名', orientation='h',
-                color='グループ', title='PA内クロス成功率',
-                height=max(400, len(df_cross_f)*22)
-            )
-            st.plotly_chart(fig4, use_container_width=True)
+        fig3 = px.bar(
+            df_cross_f.sort_values('クロス総数', ascending=True),
+            x='クロス総数', y='チーム名', orientation='h',
+            color='クロス総数', color_continuous_scale='Oranges',
+            title='クロス総数ランキング',
+            height=max(400, len(df_cross_f)*22)
+        )
+        st.plotly_chart(fig3, use_container_width=True)
 
         st.markdown("### 📋 クロスデータ一覧")
-        st.dataframe(df_cross_f.sort_values(['グループ','クロス総数'], ascending=[True,False]).reset_index(drop=True), use_container_width=True)
+        st.dataframe(df_cross_f.sort_values('クロス総数', ascending=False).reset_index(drop=True), use_container_width=True)
 
 # ===== タブ10: 守備分析 =====
 with tab10:
@@ -879,93 +842,103 @@ with tab10:
 
     df_def = extra.get('def_df', pd.DataFrame())
     if df_def.empty:
-        st.warning("Defenciveシートが見つかりません。")
+        st.warning("守備データが見つかりません。")
     else:
-        groups = ['East A', 'East B', 'West A', 'West B']
-        sel_g = st.multiselect("グループを選択", groups, default=groups, key='def_group')
-        df_def_f = df_def[df_def['グループ'].isin(sel_g)].copy()
+        df_def_f = df_def[df_def['チーム名'].isin(selected_teams)].copy() if selected_teams else df_def.copy()
 
         col1, col2 = st.columns(2)
         with col1:
-            fig = px.bar(
-                df_def_f.sort_values('タックル総数', ascending=True),
-                x='タックル総数', y='チーム名', orientation='h',
-                color='グループ', title='タックル総数',
-                height=max(400, len(df_def_f)*22)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if 'タックル総数' in df_def_f.columns:
+                fig = px.bar(
+                    df_def_f.sort_values('タックル総数', ascending=True),
+                    x='タックル総数', y='チーム名', orientation='h',
+                    color='タックル総数', color_continuous_scale='Blues',
+                    title='タックル総数ランキング',
+                    height=max(400, len(df_def_f)*22)
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            fig2 = px.scatter(
-                df_def_f, x='タックル総数', y='奪取率',
-                color='グループ', text='チーム名',
-                title='タックル数 vs 奪取率',
-                height=420
-            )
-            fig2.update_traces(textposition='top center')
-            fig2.update_yaxes(tickformat='.1%')
-            st.plotly_chart(fig2, use_container_width=True)
+            if 'タックル総数' in df_def_f.columns and 'タックル奪取数' in df_def_f.columns:
+                df_def_f['奪取率_calc'] = df_def_f['タックル奪取数'] / df_def_f['タックル総数'].replace(0, np.nan)
+                fig2 = px.scatter(
+                    df_def_f, x='タックル総数', y='奪取率_calc',
+                    text='チーム名', color='奪取率_calc',
+                    color_continuous_scale='RdYlGn',
+                    title='タックル数 vs 奪取率',
+                    height=420
+                )
+                fig2.update_traces(textposition='top center')
+                fig2.update_yaxes(tickformat='.1%')
+                st.plotly_chart(fig2, use_container_width=True)
 
-        st.markdown("---")
-        st.markdown("### エリア別タックル内訳")
-        area_data = df_def_f[['チーム名','グループ','DTタックル','MTタックル','ATタックル']].melt(
-            id_vars=['チーム名','グループ'], var_name='エリア', value_name='タックル数')
-        fig3 = px.bar(area_data, x='チーム名', y='タックル数', color='エリア',
-                      barmode='stack', title='エリア別タックル数（DT=守備/MT=中盤/AT=攻撃）',
-                      height=420)
-        fig3.update_layout(xaxis_tickangle=-45)
-        st.plotly_chart(fig3, use_container_width=True)
+        dt_t = [c for c in df_def_f.columns if 'DT' in c and 'タックル' in c]
+        mt_t = [c for c in df_def_f.columns if 'MT' in c and 'タックル' in c]
+        at_t = [c for c in df_def_f.columns if 'AT' in c and 'タックル' in c]
+        if dt_t and mt_t and at_t:
+            st.markdown("### エリア別タックル内訳")
+            area_df = df_def_f[['チーム名', dt_t[0], mt_t[0], at_t[0]]].copy()
+            area_df.columns = ['チーム名', 'DT（守備）', 'MT（中盤）', 'AT（攻撃）']
+            area_data = area_df.melt(id_vars='チーム名', var_name='エリア', value_name='タックル数')
+            fig3 = px.bar(area_data, x='チーム名', y='タックル数', color='エリア',
+                          barmode='stack', title='エリア別タックル数', height=420)
+            fig3.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig3, use_container_width=True)
 
-        st.markdown("### 守備プレー比較")
         col1, col2 = st.columns(2)
+        clear_col = next((c for c in df_def_f.columns if 'クリア' in c and 'PA' not in c), None)
+        inter_col = next((c for c in df_def_f.columns if 'インターセプト' in c), None)
+
         with col1:
-            fig4 = px.bar(
-                df_def_f.sort_values('クリア', ascending=True),
-                x='クリア', y='チーム名', orientation='h',
-                color='グループ', title='クリア数ランキング',
-                height=max(400, len(df_def_f)*22)
-            )
-            st.plotly_chart(fig4, use_container_width=True)
+            if clear_col:
+                fig4 = px.bar(
+                    df_def_f.sort_values(clear_col, ascending=True),
+                    x=clear_col, y='チーム名', orientation='h',
+                    color=clear_col, color_continuous_scale='Greens',
+                    title='クリア数ランキング',
+                    height=max(400, len(df_def_f)*22)
+                )
+                st.plotly_chart(fig4, use_container_width=True)
 
         with col2:
-            fig5 = px.bar(
-                df_def_f.sort_values('インターセプト', ascending=True),
-                x='インターセプト', y='チーム名', orientation='h',
-                color='グループ', title='インターセプト数ランキング',
-                height=max(400, len(df_def_f)*22)
+            if inter_col:
+                fig5 = px.bar(
+                    df_def_f.sort_values(inter_col, ascending=True),
+                    x=inter_col, y='チーム名', orientation='h',
+                    color=inter_col, color_continuous_scale='Purples',
+                    title='インターセプト数ランキング',
+                    height=max(400, len(df_def_f)*22)
+                )
+                st.plotly_chart(fig5, use_container_width=True)
+
+        radar_candidates = ['タックル総数','クリア','インターセプト','ブロック（シュート）','こぼれ球奪取']
+        radar_metrics = [c for c in radar_candidates if c in df_def_f.columns]
+        if len(radar_metrics) >= 3:
+            st.markdown("### 守備レーダーチャート")
+            top5 = df_def_f.nlargest(min(5, len(df_def_f)), radar_metrics[0]).copy()
+            for m in radar_metrics:
+                mn, mx = df_def_f[m].min(), df_def_f[m].max()
+                top5[f'{m}_n'] = ((top5[m] - mn) / (mx - mn + 1e-9) * 100).fillna(0)
+            fig6 = go.Figure()
+            colors = px.colors.qualitative.Set2
+            for i, (_, row) in enumerate(top5.iterrows()):
+                vals = [float(row[f'{m}_n']) for m in radar_metrics]
+                vals += vals[:1]
+                fig6.add_trace(go.Scatterpolar(
+                    r=vals, theta=radar_metrics + radar_metrics[:1],
+                    fill='toself', name=row['チーム名'],
+                    line_color=colors[i % len(colors)], opacity=0.7
+                ))
+            fig6.update_layout(
+                title='守備指標レーダーチャート',
+                polar=dict(radialaxis=dict(visible=True, range=[0,100])),
+                height=450
             )
-            st.plotly_chart(fig5, use_container_width=True)
-
-        # レーダーチャート（守備指標上位5チーム）
-        st.markdown("### 守備レーダーチャート")
-        top5_teams = df_def_f.nlargest(5, 'タックル総数')['チーム名'].tolist()
-        radar_metrics = ['タックル総数','クリア','インターセプト','シュートブロック','こぼれ球奪取']
-        radar_df = df_def_f[df_def_f['チーム名'].isin(top5_teams)].copy()
-        for m in radar_metrics:
-            mn, mx = radar_df[m].min(), radar_df[m].max()
-            radar_df[f'{m}_n'] = ((radar_df[m] - mn) / (mx - mn + 1e-9) * 100).fillna(0)
-
-        fig6 = go.Figure()
-        colors = px.colors.qualitative.Set2
-        for i, team in enumerate(top5_teams):
-            row = radar_df[radar_df['チーム名'] == team]
-            if row.empty: continue
-            vals = [float(row[f'{m}_n'].values[0]) for m in radar_metrics]
-            vals += vals[:1]
-            fig6.add_trace(go.Scatterpolar(
-                r=vals, theta=radar_metrics + radar_metrics[:1],
-                fill='toself', name=team,
-                line_color=colors[i % len(colors)], opacity=0.7
-            ))
-        fig6.update_layout(
-            title='守備指標レーダーチャート（タックル数上位5チーム）',
-            polar=dict(radialaxis=dict(visible=True, range=[0,100])),
-            height=450
-        )
-        st.plotly_chart(fig6, use_container_width=True)
+            st.plotly_chart(fig6, use_container_width=True)
 
         st.markdown("### 📋 守備データ一覧")
-        st.dataframe(df_def_f.sort_values(['グループ','タックル総数'], ascending=[True,False]).reset_index(drop=True), use_container_width=True)
+        sort_col = df_def_f.columns[1] if len(df_def_f.columns) > 1 else 'チーム名'
+        st.dataframe(df_def_f.sort_values(sort_col, ascending=False).reset_index(drop=True), use_container_width=True)
 
 # フッター
 st.markdown('---')
