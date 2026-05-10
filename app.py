@@ -663,13 +663,7 @@ with tab6:
         available_cols = [c for c in display_cols if c in df_ae_f.columns]
         df_show = df_ae_f[available_cols].sort_values('AE-DE', ascending=False).reset_index(drop=True)
         fmt = {c: '{:.3f}' for c in ['AE','DE','AE-DE','xG','xGA','GOAL-xG','失点-xGA','xG/試合','xGA/試合'] if c in df_show.columns}
-        st.dataframe(
-            df_show.style
-            .background_gradient(subset=['AE'] if 'AE' in df_show.columns else [], cmap='RdYlGn')
-            .background_gradient(subset=['DE'] if 'DE' in df_show.columns else [], cmap='RdYlGn')
-            .format(fmt),
-            use_container_width=True
-        )
+        st.dataframe(df_show.style.format(fmt), use_container_width=True)
 
 # ===== タブ7: PA進入分析 =====
 with tab7:
