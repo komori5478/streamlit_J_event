@@ -298,9 +298,9 @@ else:
     st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
 
 # ===== タブ =====
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "📊 チーム比較", "⚽ シュート分析", "🎯 パス・ポゼッション", "🏃 選手分析", "📈 時系列トレンド",
-    "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析"
+    "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析", "📋 チーム詳細レポート"
 ])
 
 # ===== タブ1: チーム比較 =====
@@ -1229,3 +1229,181 @@ with tab10:
 # フッター
 st.markdown('---')
 st.caption('J2/J3 2026シーズン イベントデータ分析ツール | Powered by Streamlit & Plotly')
+
+# ===== タブ11: チーム詳細レポート =====
+with tab11:
+    st.markdown("## 📋 チーム詳細レポート")
+
+    # チーム選択
+    report_team = st.selectbox("分析するチームを選択", sorted(df_team['チーム名'].dropna().unique()))
+
+    df_report = df_team[
+        (df_team['チーム名'] == report_team) &
+        (df_team['節'] >= selected_rounds[0]) &
+        (df_team['節'] <= selected_rounds[1])
+    ].copy()
+    df_report_player = df_player[df_player['チーム名'] == report_team].copy()
+
+    if df_report.empty:
+        st.warning("該当データがありません")
+        st.stop()
+
+    # ===== KPIサマリー =====
+    st.markdown(f"### 🏟️ {report_team} — 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
+    n_games = len(df_report)
+    wins   = len(df_report[df_report['得点'] > df_report['失点']])
+    draws  = len(df_report[df_report['得点'] == df_report['失点']])
+    losses = len(df_report[df_report['得点'] < df_report['失点']])
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("試合数", n_games)
+    c2.metric("勝", wins)
+    c3.metric("分", draws)
+    c4.metric("負", losses)
+    c5.metric("得点", int(df_report['得点'].sum()))
+    c6.metric("失点", int(df_report['失点'].sum()))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("xG", f"{df_report['xG'].sum():.2f}")
+    c2.metric("シュート", int(df_report['シュート'].sum()))
+    c3.metric("パス成功率", f"{(df_report['パス成功数'].sum() / df_report['パス総数'].sum() * 100):.1f}%")
+    c4.metric("ボール保持率", f"{(df_report['ボール保持率'].mean() * 100):.1f}%")
+
+    st.markdown("---")
+
+    # ===== 他チームとの比較（レーダーチャート） =====
+    st.markdown("### 📡 他チームとの比較")
+
+    # 全チーム集計（リーグ全体）
+    all_team_agg = df_team[
+        (df_team['節'] >= selected_rounds[0]) &
+        (df_team['節'] <= selected_rounds[1])
+    ].groupby('チーム名').agg(
+        得点=('得点','sum'), 失点=('失点','sum'),
+        シュート=('シュート','sum'), 枠内シュート=('枠内シュート','sum'),
+        xG=('xG','sum'), パス総数=('パス総数','sum'), パス成功数=('パス成功数','sum'),
+        ドリブル成功数=('ドリブル成功数','sum'), タックル奪取数=('タックル奪取数','sum'),
+        インターセプト=('インターセプト','sum'), ボール保持率=('ボール保持率','mean'),
+        クロス成功数=('クロス成功数','sum'),
+    ).reset_index()
+    all_team_agg['パス成功率'] = (all_team_agg['パス成功数'] / all_team_agg['パス総数'].replace(0, np.nan) * 100).round(1)
+    all_team_agg['枠内率'] = (all_team_agg['枠内シュート'] / all_team_agg['シュート'].replace(0, np.nan) * 100).round(1)
+    all_team_agg['保持率(%)'] = (all_team_agg['ボール保持率'] * 100).round(1)
+
+    # 比較チーム選択
+    compare_teams = st.multiselect(
+        "比較するチームを選択（最大5チーム）",
+        [t for t in sorted(df_team['チーム名'].unique()) if t != report_team],
+        default=sorted(df_team['チーム名'].unique())[:4],
+        max_selections=5
+    )
+    radar_teams = [report_team] + compare_teams
+
+    radar_metrics = ['シュート','枠内率','パス成功率','保持率(%)','ドリブル成功数','タックル奪取数','インターセプト']
+    radar_data = all_team_agg[all_team_agg['チーム名'].isin(radar_teams)].copy()
+    for m in radar_metrics:
+        mn, mx = all_team_agg[m].min(), all_team_agg[m].max()
+        radar_data[f'{m}_n'] = ((radar_data[m] - mn) / (mx - mn + 1e-9) * 100).fillna(0)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_radar = go.Figure()
+        colors = ['#FF6B6B'] + list(px.colors.qualitative.Set2)
+        for i, team in enumerate(radar_teams):
+            row = radar_data[radar_data['チーム名'] == team]
+            if row.empty: continue
+            vals = [float(row[f'{m}_n'].values[0]) for m in radar_metrics]
+            vals += vals[:1]
+            lw = 3 if team == report_team else 1.5
+            fig_radar.add_trace(go.Scatterpolar(
+                r=vals, theta=radar_metrics + radar_metrics[:1],
+                fill='toself', name=team,
+                line=dict(color=colors[i % len(colors)], width=lw),
+                opacity=0.8 if team == report_team else 0.5
+            ))
+        fig_radar.update_layout(
+            title=f'{report_team} vs 他チーム レーダーチャート',
+            polar=dict(radialaxis=dict(visible=True, range=[0,100])),
+            height=480
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    with col2:
+        # 主要指標の全体順位
+        st.markdown(f"#### {report_team} のリーグ順位")
+        rank_metrics = ['得点','失点','xG','シュート','パス成功率','保持率(%)','ドリブル成功数','タックル奪取数','インターセプト']
+        rank_rows = []
+        for m in rank_metrics:
+            ascending = (m == '失点')  # 失点は少ないほど良い
+            ranked = all_team_agg.sort_values(m, ascending=ascending).reset_index(drop=True)
+            rank = ranked[ranked['チーム名'] == report_team].index[0] + 1 if report_team in ranked['チーム名'].values else '-'
+            val = all_team_agg[all_team_agg['チーム名'] == report_team][m].values
+            val_str = f"{val[0]:.1f}" if len(val) > 0 else '-'
+            total = len(all_team_agg)
+            rank_rows.append({'指標': m, '値': val_str, f'順位（/{total}）': rank})
+        st.dataframe(pd.DataFrame(rank_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ===== 選手個人スタッツ一覧 =====
+    st.markdown("### 👥 選手個人スタッツ一覧")
+
+    # 選手集計
+    p_agg = df_report_player.groupby(['選手名','ポジション']).agg(
+        出場時間=('出場時間','sum'),
+        試合数=('節','count'),
+        ゴール=('ゴール','sum'),
+        アシスト=('アシスト','sum'),
+        シュート=('シュート','sum'),
+        枠内シュート=('枠内シュート','sum'),
+        ラストパス=('ラストパス','sum'),
+        パス総数=('パス総数','sum'),
+        パス成功数=('パス成功数','sum'),
+        スルーパス成功数=('スルーパス成功数','sum'),
+        クロス成功数=('クロス成功数','sum'),
+        ドリブル成功数=('ドリブル成功数','sum'),
+        タックル奪取数=('タックル奪取数','sum'),
+        インターセプト=('インターセプト','sum'),
+        空中戦勝ち数=('空中戦勝ち数','sum'),
+        クリア=('クリア','sum'),
+        セーブ=('セーブ','sum'),
+        スプリント回数=('スプリント回数','sum'),
+    ).reset_index()
+
+    p_agg['パス成功率'] = (p_agg['パス成功数'] / p_agg['パス総数'].replace(0, np.nan) * 100).round(1)
+    p_agg['枠内率'] = (p_agg['枠内シュート'] / p_agg['シュート'].replace(0, np.nan) * 100).round(1)
+    p_agg['チャンスクリエイト'] = p_agg['スルーパス成功数'] + p_agg['クロス成功数'] + p_agg['ラストパス']
+    p_agg['90分換算ゴール'] = (p_agg['ゴール'] / p_agg['出場時間'].replace(0, np.nan) * 90).round(2)
+    p_agg['90分換算CC'] = (p_agg['チャンスクリエイト'] / p_agg['出場時間'].replace(0, np.nan) * 90).round(2)
+
+    # マスター結合（あれば）
+    if player_master is not None:
+        pm = player_master[['選手名','背番号','年齢','身長']].drop_duplicates('選手名')
+        p_agg = p_agg.merge(pm, on='選手名', how='left')
+
+    # ポジション別タブ
+    for tab_p, pos in zip(st.tabs(['全員','GK','DF','MF','FW']), ['全員','GK','DF','MF','FW']):
+        with tab_p:
+            df_pos = p_agg if pos == '全員' else p_agg[p_agg['ポジション'] == pos]
+
+            base_cols = ['選手名','ポジション']
+            if player_master is not None:
+                base_cols += [c for c in ['背番号','年齢','身長'] if c in df_pos.columns]
+            base_cols += ['試合数','出場時間','ゴール','アシスト','チャンスクリエイト','90分換算ゴール','90分換算CC']
+
+            extra_cols = {
+                'GK': ['セーブ','クリア','パス成功率'],
+                'DF': ['タックル奪取数','インターセプト','クリア','空中戦勝ち数','パス成功率'],
+                'MF': ['パス成功率','ドリブル成功数','スルーパス成功数','クロス成功数','スプリント回数'],
+                'FW': ['シュート','枠内率','枠内シュート','ドリブル成功数'],
+            }
+            if pos in extra_cols:
+                show_cols = base_cols + [c for c in extra_cols[pos] if c in df_pos.columns]
+            else:
+                show_cols = base_cols
+
+            show_cols = [c for c in show_cols if c in df_pos.columns]
+            st.dataframe(
+                df_pos[show_cols].sort_values('出場時間', ascending=False).reset_index(drop=True),
+                use_container_width=True
+            )
