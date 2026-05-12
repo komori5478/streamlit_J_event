@@ -24,6 +24,48 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data
+def load_master(team_file, player_file):
+    df_tm = pd.read_csv(team_file, encoding='cp932')
+    df_pm = pd.read_csv(player_file, encoding='cp932')
+
+    # J2J3のみ
+    j2j3 = df_tm[df_tm['試合種別ID'] == 250].copy()
+
+    # チームカラー（R.G.B → rgb()形式）
+    def parse_color(c):
+        try:
+            r, g, b = str(c).split('.')
+            return f'rgb({int(float(r))},{int(float(g))},{int(float(b))})'
+        except:
+            return 'rgb(128,128,128)'
+
+    team_master = j2j3[['チームID','チーム名略','所属グループ','チームカラー','チーム名']].copy()
+    team_master.columns = ['チームID','チーム名','グループ','チームカラー生','チームフルネーム']
+    team_master['チームカラー'] = team_master['チームカラー生'].apply(parse_color)
+    team_master = team_master.drop(columns=['チームカラー生'])
+
+    # 選手マスター（J2J3のみ）
+    j2j3_ids = j2j3['チームID'].tolist()
+    player_master = df_pm[df_pm['チームID'].isin(j2j3_ids)][
+        ['選手ID','選手名','チーム名略','ポジション','背番号','身長','体重','生年月日',
+         'Jリーグ通算出場数(J1)','Jリーグ通算出場数(J2)','Jリーグ通算出場数(J3)']
+    ].copy()
+    player_master.columns = ['選手ID','選手名','チーム名','ポジション','背番号','身長','体重','生年月日',
+                              'J1通算','J2通算','J3通算']
+    # 年齢計算
+    player_master['生年月日'] = pd.to_numeric(player_master['生年月日'], errors='coerce')
+    player_master['年齢'] = player_master['生年月日'].apply(
+        lambda x: 2026 - int(str(int(x))[:4]) if pd.notna(x) else None
+    )
+    player_master['Jリーグ通算'] = (
+        player_master['J1通算'].fillna(0) +
+        player_master['J2通算'].fillna(0) +
+        player_master['J3通算'].fillna(0)
+    ).astype(int)
+
+    return team_master, player_master
+
+@st.cache_data
 def load_data(file):
     xl = pd.ExcelFile(file)
 
@@ -140,9 +182,37 @@ with st.sidebar:
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
 
     st.markdown("---")
+    st.markdown("### 📋 マスターデータ（任意）")
+    team_master_file   = st.file_uploader("MasterTeam CSV",   type=["csv"], key="team_master")
+    player_master_file = st.file_uploader("MasterPlayer CSV", type=["csv"], key="player_master")
+
+    team_master   = None
+    player_master = None
+    if team_master_file and player_master_file:
+        team_master, player_master = load_master(team_master_file, player_master_file)
+        st.success("✅ マスター読み込み完了")
+
+    # チームカラー辞書（マスターがあれば使用、なければデフォルト）
+    if team_master is not None:
+        color_map = dict(zip(team_master['チーム名'], team_master['チームカラー']))
+        group_map = dict(zip(team_master['チーム名'], team_master['グループ']))
+    else:
+        color_map = {}
+        group_map = {}
+
+    st.markdown("---")
     st.markdown("### 🔍 フィルター")
     all_teams = sorted(df_team['チーム名'].dropna().unique())
-    selected_teams = st.multiselect("チームを選択", all_teams, default=all_teams[:6])
+
+    # グループフィルター（マスターがあれば）
+    if group_map:
+        all_groups = sorted(set(group_map.values()))
+        sel_groups = st.multiselect("グループで絞り込み", all_groups, default=all_groups)
+        teams_in_group = [t for t in all_teams if group_map.get(t,'') in sel_groups]
+    else:
+        teams_in_group = all_teams
+
+    selected_teams = st.multiselect("チームを選択", teams_in_group, default=teams_in_group[:6])
 
     rounds = sorted(df_team['節'].dropna().unique().astype(int))
     selected_rounds = st.slider(
@@ -166,7 +236,13 @@ df_player_filtered = df_player[df_player['チーム名'].isin(selected_teams)].c
 
 # ===== メインヘッダー =====
 st.markdown('<div class="main-header">⚽ J2/J3 2026 イベントデータ分析</div>', unsafe_allow_html=True)
-st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
+
+# グループ別チーム表示（マスターあり）
+if group_map:
+    grp_text = ' ／ '.join([f"**{g}**: {', '.join([t for t in selected_teams if group_map.get(t)==g])}" for g in sorted(set(group_map.get(t,'') for t in selected_teams)) if [t for t in selected_teams if group_map.get(t)==g]])
+    st.caption(f"第{selected_rounds[0]}節〜第{selected_rounds[1]}節　{grp_text}")
+else:
+    st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
 
 # ===== タブ =====
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
@@ -443,29 +519,23 @@ with tab4:
         n_mf = form['MF']
         n_fw = form['FW']
 
-        # 最低出場時間フィルター
         df_f = player_df[player_df['出場時間'] >= min_min].copy()
+
+        # 選手マスター結合（あれば）
+        if player_master is not None:
+            pm = player_master[['選手名','年齢','身長','背番号','Jリーグ通算']].drop_duplicates('選手名')
+            df_f = df_f.merge(pm, on='選手名', how='left')
 
         fig = go.Figure()
 
-        # ピッチ背景
-        # 外枠
+        # ピッチ描画
         fig.add_shape(type='rect', x0=0, y0=0, x1=100, y1=100,
                       line=dict(color='white', width=2), fillcolor='#2d8a4e')
-        # センターライン
-        fig.add_shape(type='line', x0=0, y0=50, x1=100, y1=50,
-                      line=dict(color='white', width=1.5))
-        # センターサークル
-        fig.add_shape(type='circle', x0=40, y0=40, x1=60, y1=60,
-                      line=dict(color='white', width=1.5))
-        # ペナルティエリア（上）
-        fig.add_shape(type='rect', x0=20, y0=78, x1=80, y1=100,
-                      line=dict(color='white', width=1.5), fillcolor='rgba(0,0,0,0)')
-        # ペナルティエリア（下）
-        fig.add_shape(type='rect', x0=20, y0=0, x1=80, y1=22,
-                      line=dict(color='white', width=1.5), fillcolor='rgba(0,0,0,0)')
+        fig.add_shape(type='line', x0=0, y0=50, x1=100, y1=50, line=dict(color='white', width=1.5))
+        fig.add_shape(type='circle', x0=40, y0=40, x1=60, y1=60, line=dict(color='white', width=1.5))
+        fig.add_shape(type='rect', x0=20, y0=78, x1=80, y1=100, line=dict(color='white', width=1.5), fillcolor='rgba(0,0,0,0)')
+        fig.add_shape(type='rect', x0=20, y0=0, x1=80, y1=22, line=dict(color='white', width=1.5), fillcolor='rgba(0,0,0,0)')
 
-        # ポジション別座標（y=0が自陣ゴール、y=100が相手ゴール）
         pos_coords = {
             'GK': [(50, 5)],
             'DF': [(100 / (n_df + 1) * (i + 1), 22) for i in range(n_df)],
@@ -486,33 +556,49 @@ with tab4:
                     row = top.iloc[i]
                     name = row['選手名']
                     team = row['チーム名']
-                    val = row[metric]
-                    label = f"<b>{name}</b><br>{team}<br>{metric}: {val}"
+                    val  = row[metric]
+
+                    # マスター情報
+                    age    = int(row['年齢'])    if player_master is not None and pd.notna(row.get('年齢'))    else None
+                    height = int(row['身長'])    if player_master is not None and pd.notna(row.get('身長'))    else None
+                    number = int(row['背番号'])  if player_master is not None and pd.notna(row.get('背番号'))  else None
+                    jlg    = int(row['Jリーグ通算']) if player_master is not None and pd.notna(row.get('Jリーグ通算')) else None
+
+                    extra_info = ''
+                    if age:    extra_info += f'年齢:{age}'
+                    if height: extra_info += f' / {height}cm'
+                    if jlg is not None: extra_info += f' / J通算:{jlg}'
+
+                    num_str = f'#{number} ' if number else ''
+                    hover_label = f"<b>{num_str}{name}</b><br>{team}<br>{metric}: {val}"
+                    if extra_info: hover_label += f"<br>{extra_info}"
+
+                    display_name = name[:4]
+                    if number: display_name = f'#{number}'
                 else:
                     name = '---'
-                    label = '---'
+                    hover_label = '---'
+                    display_name = ''
 
-                # 円マーカー
                 fig.add_trace(go.Scatter(
                     x=[x], y=[y],
                     mode='markers+text',
                     marker=dict(size=30, color=colors[pos], line=dict(color='white', width=2)),
-                    text=[name[:4] if name != '---' else ''],
+                    text=[display_name],
                     textposition='middle center',
                     textfont=dict(size=9, color='black'),
-                    hovertext=[label],
+                    hovertext=[hover_label],
                     hoverinfo='text',
                     showlegend=(i == 0),
                     name=pos,
                     legendgroup=pos,
-                    marker_symbol='circle',
                 ))
 
-                # 名前ラベル（円の下）
                 if name != '---':
+                    age_str = f' ({age}歳)' if age else ''
                     fig.add_annotation(
                         x=x, y=y - 6,
-                        text=f"<b>{name}</b><br><span style='font-size:9px'>{team}</span><br><span style='color:#FFD700'>{metric}: {val}</span>",
+                        text=f"<b>{name}</b>{age_str}<br><span style='font-size:9px'>{team}</span><br><span style='color:#FFD700'>{metric}: {val}</span>",
                         showarrow=False,
                         font=dict(size=8, color='white'),
                         align='center',
@@ -547,8 +633,18 @@ with tab4:
             df_pos = player_all[
                 (player_all['ポジション'] == pos) &
                 (player_all['出場時間'] >= min_minutes_f)
-            ].nlargest(20, metric)[['選手名', 'チーム名', '出場時間', metric]]
-            st.dataframe(df_pos.reset_index(drop=True), use_container_width=True)
+            ].nlargest(20, metric)
+
+            # マスター情報を結合
+            if player_master is not None:
+                pm = player_master[['選手名','背番号','年齢','身長','体重','Jリーグ通算']].drop_duplicates('選手名')
+                df_pos = df_pos.merge(pm, on='選手名', how='left')
+                show_cols = ['選手名','チーム名','背番号','年齢','身長','Jリーグ通算','出場時間', metric]
+            else:
+                show_cols = ['選手名','チーム名','出場時間', metric]
+
+            show_cols = [c for c in show_cols if c in df_pos.columns]
+            st.dataframe(df_pos[show_cols].reset_index(drop=True), use_container_width=True)
 
 # ===== タブ5: 時系列トレンド =====
 with tab5:
