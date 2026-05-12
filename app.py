@@ -152,6 +152,39 @@ def load_data(file):
         def_agg = df_team.groupby('チーム名')[def_cols].sum().reset_index()
         extra['def_df'] = def_agg
 
+    # ===== PPDA計算 =====
+    # 相手チームのDT+MTパス数（相手が自陣+中盤で行ったパス = 自チームが守備すべきゾーンのパス）
+    df_ppda_opp = df_team[['節','チーム名','相手チーム名','DTからのパス','MTからのパス']].copy()
+    df_ppda_opp = df_ppda_opp.rename(columns={
+        'チーム名': '相手チーム名',
+        '相手チーム名': 'チーム名',
+        'DTからのパス': '相手DTパス',
+        'MTからのパス': '相手MTパス',
+    })
+    df_ppda_base = df_team[['節','チーム名','ATでのタックル奪取数','MTでのタックル奪取数','インターセプト','ファウル','DTでのファウル']].copy()
+    df_ppda_base = df_ppda_base.merge(df_ppda_opp[['節','チーム名','相手DTパス','相手MTパス']], on=['節','チーム名'], how='left')
+
+    # PPDA = (相手DTパス + 相手MTパス) / (ATタックル奪取 + MTタックル奪取 + インターセプト + ファウル - DTでのファウル)
+    ppda_agg = df_ppda_base.groupby('チーム名').agg(
+        相手パス=( '相手MTパス', 'sum'),  # MT+DTは後で足す
+        相手DTパス=('相手DTパス', 'sum'),
+        ATタックル奪取=('ATでのタックル奪取数', 'sum'),
+        MTタックル奪取=('MTでのタックル奪取数', 'sum'),
+        インターセプト=('インターセプト', 'sum'),
+        ファウル=('ファウル', 'sum'),
+        DTファウル=('DTでのファウル', 'sum'),
+    ).reset_index()
+
+    ppda_agg['相手パス合計'] = ppda_agg['相手パス'] + ppda_agg['相手DTパス']
+    ppda_agg['守備アクション'] = (
+        ppda_agg['ATタックル奪取'] +
+        ppda_agg['MTタックル奪取'] +
+        ppda_agg['インターセプト'] +
+        ppda_agg['ファウル'] - ppda_agg['DTファウル']  # 自陣ファウルは除外
+    )
+    ppda_agg['PPDA'] = (ppda_agg['相手パス合計'] / ppda_agg['守備アクション'].replace(0, np.nan)).round(2)
+    extra['ppda'] = ppda_agg[['チーム名','PPDA','相手パス合計','守備アクション']]
+
     # ボール保持率
     if 'ボール保持率' in df_team.columns:
         apt_agg = df_team.groupby('チーム名').agg(
@@ -1034,6 +1067,55 @@ with tab10:
         st.markdown("### 📋 守備データ一覧")
         sort_col = df_def_f.columns[1] if len(df_def_f.columns) > 1 else 'チーム名'
         st.dataframe(df_def_f.sort_values(sort_col, ascending=False).reset_index(drop=True), use_container_width=True)
+
+    # ===== PPDA =====
+    st.markdown("---")
+    st.markdown("### 🔥 PPDA（プレッシング強度）")
+    st.caption("PPDA = 相手の自陣+中盤パス数 ÷ 自チームの守備アクション（AT+MTタックル奪取 + インターセプト + ファウル）　**数値が小さいほどハイプレスが効いている**")
+
+    df_ppda = extra.get('ppda', pd.DataFrame())
+    if not df_ppda.empty:
+        df_ppda_f = df_ppda[df_ppda['チーム名'].isin(selected_teams)].copy() if selected_teams else df_ppda.copy()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # PPDAランキング棒グラフ（小さいほど良いので昇順）
+            df_ppda_sorted = df_ppda_f.sort_values('PPDA', ascending=False)
+            fig_ppda = px.bar(
+                df_ppda_sorted,
+                x='PPDA', y='チーム名', orientation='h',
+                color='PPDA',
+                color_continuous_scale='RdYlGn_r',  # 小さい=緑、大きい=赤
+                title='PPDAランキング（左ほどハイプレス）',
+                height=max(400, len(df_ppda_f) * 22)
+            )
+            fig_ppda.add_vline(x=df_ppda_f['PPDA'].mean(), line_dash='dash',
+                               line_color='white', opacity=0.7,
+                               annotation_text=f"平均: {df_ppda_f['PPDA'].mean():.1f}",
+                               annotation_font_color='white')
+            st.plotly_chart(fig_ppda, use_container_width=True)
+
+        with col2:
+            # 相手パス数 vs 守備アクション 散布図
+            fig_ppda2 = px.scatter(
+                df_ppda_f,
+                x='守備アクション', y='相手パス合計',
+                text='チーム名',
+                color='PPDA',
+                color_continuous_scale='RdYlGn_r',
+                size='守備アクション',
+                title='守備アクション数 vs 相手パス数（左下=ハイプレス成功）',
+                labels={'守備アクション': '守備アクション数', '相手パス合計': '相手パス数（DT+MT）'},
+                height=max(400, len(df_ppda_f) * 22)
+            )
+            fig_ppda2.update_traces(textposition='top center')
+            st.plotly_chart(fig_ppda2, use_container_width=True)
+
+        # PPDAデータテーブル
+        st.dataframe(
+            df_ppda_f.sort_values('PPDA')[['チーム名','PPDA','相手パス合計','守備アクション']].reset_index(drop=True),
+            use_container_width=True
+        )
 
 # フッター
 st.markdown('---')
