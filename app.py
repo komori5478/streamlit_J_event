@@ -1291,10 +1291,11 @@ with tab11:
     all_team_agg['保持率(%)'] = (all_team_agg['ボール保持率'] * 100).round(1)
 
     # 比較チーム選択
+    other_teams = [t for t in sorted(df_team['チーム名'].unique()) if t != report_team]
     compare_teams = st.multiselect(
         "比較するチームを選択（最大5チーム）",
-        [t for t in sorted(df_team['チーム名'].unique()) if t != report_team],
-        default=sorted(df_team['チーム名'].unique())[:4],
+        other_teams,
+        default=other_teams[:4],
         max_selections=5
     )
     radar_teams = [report_team] + compare_teams
