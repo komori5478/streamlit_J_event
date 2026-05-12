@@ -218,10 +218,19 @@ def load_data(file):
 
 # ===== サイドバー =====
 with st.sidebar:
-    st.markdown("## ⚽ J2/J3 分析ツール")
+    st.markdown("## ⚽ Jリーグ 分析ツール")
+    st.markdown("---")
+
+    # リーグ選択
+    st.markdown("### 🏆 リーグ選択")
+    selected_league = st.radio("リーグ", ["J1", "J2/J3"], horizontal=True)
+
     st.markdown("---")
     st.markdown("### 📁 データ読み込み")
-    uploaded_file = st.file_uploader("XLSXファイルをアップロード", type=["xlsx"])
+    uploaded_file = st.file_uploader(
+        f"{selected_league} XLSXファイルをアップロード", type=["xlsx"],
+        key=f"upload_{selected_league}"
+    )
 
     if not uploaded_file:
         st.info("👆 Excelファイルをアップロードしてください")
@@ -242,7 +251,7 @@ with st.sidebar:
     try:
         team_master, player_master = load_master('MasterTeam_2026.csv', 'MasterPlayer_2026.csv')
         st.success("✅ マスターデータ読み込み完了")
-    except Exception as e:
+    except:
         st.info("ℹ️ マスターデータが見つかりません（任意）")
 
     # チームカラー・グループ辞書
@@ -257,8 +266,8 @@ with st.sidebar:
     st.markdown("### 🔍 フィルター")
     all_teams = sorted(df_team['チーム名'].dropna().unique())
 
-    # グループフィルター（マスターがあれば）
-    if group_map:
+    # J2/J3のみグループフィルター表示
+    if selected_league == "J2/J3" and group_map:
         all_groups = sorted(set(group_map.values()))
         sel_groups = st.multiselect("グループで絞り込み", all_groups, default=all_groups)
         teams_in_group = [t for t in all_teams if group_map.get(t,'') in sel_groups]
@@ -288,10 +297,11 @@ df_filtered = df_team[
 df_player_filtered = df_player[df_player['チーム名'].isin(selected_teams)].copy()
 
 # ===== メインヘッダー =====
-st.markdown('<div class="main-header">⚽ J2/J3 2026 イベントデータ分析</div>', unsafe_allow_html=True)
+league_label = "J1" if selected_league == "J1" else "J2/J3"
+st.markdown(f'<div class="main-header">⚽ {league_label} 2026 イベントデータ分析</div>', unsafe_allow_html=True)
 
-# グループ別チーム表示（マスターあり）
-if group_map:
+# グループ別チーム表示（J2/J3かつマスターあり）
+if selected_league == "J2/J3" and group_map:
     grp_text = ' ／ '.join([f"**{g}**: {', '.join([t for t in selected_teams if group_map.get(t)==g])}" for g in sorted(set(group_map.get(t,'') for t in selected_teams)) if [t for t in selected_teams if group_map.get(t)==g]])
     st.caption(f"第{selected_rounds[0]}節〜第{selected_rounds[1]}節　{grp_text}")
 else:
