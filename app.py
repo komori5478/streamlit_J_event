@@ -181,18 +181,16 @@ with st.sidebar:
     st.success(f"✅ 読み込み完了")
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
 
-    st.markdown("---")
-    st.markdown("### 📋 マスターデータ（任意）")
-    team_master_file   = st.file_uploader("MasterTeam CSV",   type=["csv"], key="team_master")
-    player_master_file = st.file_uploader("MasterPlayer CSV", type=["csv"], key="player_master")
-
+    # マスターデータ自動読み込み（リポジトリに同梱）
     team_master   = None
     player_master = None
-    if team_master_file and player_master_file:
-        team_master, player_master = load_master(team_master_file, player_master_file)
-        st.success("✅ マスター読み込み完了")
+    try:
+        team_master, player_master = load_master('MasterTeam_2026.csv', 'MasterPlayer_2026.csv')
+        st.success("✅ マスターデータ読み込み完了")
+    except Exception as e:
+        st.info("ℹ️ マスターデータが見つかりません（任意）")
 
-    # チームカラー辞書（マスターがあれば使用、なければデフォルト）
+    # チームカラー・グループ辞書
     if team_master is not None:
         color_map = dict(zip(team_master['チーム名'], team_master['チームカラー']))
         group_map = dict(zip(team_master['チーム名'], team_master['グループ']))
