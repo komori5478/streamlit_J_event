@@ -192,6 +192,28 @@ def load_data(file):
         ).reset_index()
         extra['apt'] = apt_agg
 
+    # ===== 被チャンスクリエイト（チーム単位）=====
+    # 相手チームのスルーパス成功数 + クロス成功数 + ラストパスを逆算
+    cc_cols = ['スルーパス成功数','クロス成功数','ラストパス']
+    cc_available = [c for c in cc_cols if c in df_team.columns]
+    if cc_available:
+        df_cc_opp = df_team[['節','チーム名','相手チーム名'] + cc_available].copy()
+        df_cc_opp = df_cc_opp.rename(columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+        df_cc_opp['相手CC'] = df_cc_opp[cc_available].sum(axis=1)
+        cc_agg = df_cc_opp.groupby('チーム名').agg(
+            被チャンスクリエイト=('相手CC','sum'),
+            試合数=('節','count'),
+        ).reset_index()
+        cc_agg['被CC/試合'] = (cc_agg['被チャンスクリエイト'] / cc_agg['試合数']).round(1)
+
+        # チーム自身のCCも計算して合わせる
+        df_team['CC'] = df_team[cc_available].sum(axis=1)
+        cc_self = df_team.groupby('チーム名').agg(チャンスクリエイト=('CC','sum')).reset_index()
+        cc_agg = cc_agg.merge(cc_self, on='チーム名', how='left')
+        cc_agg['CC/試合'] = (cc_agg['チャンスクリエイト'] / cc_agg['試合数']).round(1)
+        cc_agg['CC差'] = cc_agg['チャンスクリエイト'] - cc_agg['被チャンスクリエイト']
+        extra['cc'] = cc_agg
+
     return df_team, df_player, extra
 
 # ===== サイドバー =====
@@ -1123,6 +1145,84 @@ with tab10:
         # PPDAデータテーブル
         st.dataframe(
             df_ppda_f.sort_values('PPDA')[['チーム名','PPDA','相手パス合計','守備アクション']].reset_index(drop=True),
+            use_container_width=True
+        )
+
+    # ===== 被チャンスクリエイト =====
+    st.markdown("---")
+    st.markdown("### 🚨 被チャンスクリエイト分析")
+    st.caption("被チャンスクリエイト = 相手チームの（スルーパス成功数 + クロス成功数 + ラストパス）の合計　**数値が小さいほど守備的に優れている**")
+
+    df_cc = extra.get('cc', pd.DataFrame())
+    if not df_cc.empty:
+        df_cc_f = df_cc[df_cc['チーム名'].isin(selected_teams)].copy() if selected_teams else df_cc.copy()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # 被CC vs CC 散布図
+            fig_cc1 = px.scatter(
+                df_cc_f, x='チャンスクリエイト', y='被チャンスクリエイト',
+                text='チーム名',
+                color='CC差', color_continuous_scale='RdYlGn',
+                size='チャンスクリエイト',
+                title='チャンスクリエイト vs 被チャンスクリエイト\n（右下＝攻撃力高・守備力高）',
+                labels={'チャンスクリエイト':'チャンスクリエイト（攻撃）',
+                        '被チャンスクリエイト':'被チャンスクリエイト（守備）'},
+                height=450
+            )
+            fig_cc1.update_traces(textposition='top center')
+            # 対角線（攻守均衡ライン）
+            mv = max(df_cc_f['チャンスクリエイト'].max(), df_cc_f['被チャンスクリエイト'].max())
+            fig_cc1.add_shape(type='line', x0=0, y0=0, x1=mv, y1=mv,
+                              line=dict(dash='dash', color='gray'))
+            st.plotly_chart(fig_cc1, use_container_width=True)
+
+        with col2:
+            # CC差バーチャート
+            df_cc_sorted = df_cc_f.sort_values('CC差', ascending=True)
+            df_cc_sorted['色'] = df_cc_sorted['CC差'].apply(lambda x: 'プラス（攻撃優位）' if x >= 0 else 'マイナス（守備優位）')
+            fig_cc2 = px.bar(
+                df_cc_sorted, x='CC差', y='チーム名', orientation='h',
+                color='色',
+                color_discrete_map={'プラス（攻撃優位）':'#2ecc71','マイナス（守備優位）':'#3498db'},
+                title='CC差（CC - 被CC）\nプラス＝相手より多くチャンスを作っている',
+                height=450
+            )
+            fig_cc2.add_vline(x=0, line_color='white', line_width=1)
+            st.plotly_chart(fig_cc2, use_container_width=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # 被CCランキング（少ないほど良い）
+            fig_cc3 = px.bar(
+                df_cc_f.sort_values('被チャンスクリエイト', ascending=True),
+                x='被チャンスクリエイト', y='チーム名', orientation='h',
+                color='被チャンスクリエイト', color_continuous_scale='RdYlGn_r',
+                title='被チャンスクリエイトランキング（左ほど守備良）',
+                height=max(400, len(df_cc_f)*22)
+            )
+            avg = df_cc_f['被チャンスクリエイト'].mean()
+            fig_cc3.add_vline(x=avg, line_dash='dash', line_color='white', opacity=0.7,
+                              annotation_text=f"平均:{avg:.0f}", annotation_font_color='white')
+            st.plotly_chart(fig_cc3, use_container_width=True)
+
+        with col2:
+            # 1試合平均CC vs 被CC
+            fig_cc4 = px.scatter(
+                df_cc_f, x='CC/試合', y='被CC/試合',
+                text='チーム名', color='CC差',
+                color_continuous_scale='RdYlGn',
+                title='1試合平均 CC vs 被CC\n（右下＝理想）',
+                labels={'CC/試合':'CC/試合（攻撃）','被CC/試合':'被CC/試合（守備）'},
+                height=max(400, len(df_cc_f)*22)
+            )
+            fig_cc4.update_traces(textposition='top center')
+            st.plotly_chart(fig_cc4, use_container_width=True)
+
+        # データテーブル
+        st.dataframe(
+            df_cc_f[['チーム名','チャンスクリエイト','被チャンスクリエイト','CC差','CC/試合','被CC/試合']]
+            .sort_values('CC差', ascending=False).reset_index(drop=True),
             use_container_width=True
         )
 
