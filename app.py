@@ -378,11 +378,13 @@ with tab2:
             PA内ゴール=('PA内ゴール', 'sum'),
             PA外ゴール=('PA外ゴール', 'sum'),
         ).reset_index()
+        pa_data['合計'] = pa_data['PA内シュート'] + pa_data['PA外シュート']
+        pa_data = pa_data.sort_values('合計', ascending=False)
 
         fig = go.Figure()
         fig.add_trace(go.Bar(name='PA内シュート', x=pa_data['チーム名'], y=pa_data['PA内シュート'], marker_color='#2196F3'))
         fig.add_trace(go.Bar(name='PA外シュート', x=pa_data['チーム名'], y=pa_data['PA外シュート'], marker_color='#FF9800'))
-        fig.update_layout(barmode='stack', title='PA内外シュート数', xaxis_tickangle=-45, height=400)
+        fig.update_layout(barmode='stack', title='PA内外シュート数（降順）', xaxis_tickangle=-45, height=400)
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
@@ -400,10 +402,12 @@ with tab2:
     if shot_pattern_cols:
         shot_patterns = df_filtered.groupby('チーム名')[shot_pattern_cols].sum()
         shot_patterns.columns = [c.replace('シュートパターン', '').strip() for c in shot_patterns.columns]
+        shot_patterns['合計'] = shot_patterns.sum(axis=1)
+        shot_patterns = shot_patterns.sort_values('合計', ascending=False).drop(columns='合計')
         fig = px.bar(
             shot_patterns.reset_index().melt(id_vars='チーム名'),
             x='チーム名', y='value', color='variable',
-            title='シュートパターン内訳（積み上げ）',
+            title='シュートパターン内訳（降順）',
             labels={'value': 'シュート数', 'variable': 'パターン'},
             height=400
         )
@@ -440,10 +444,12 @@ with tab3:
             右サイドからのクロス=('右サイドからのクロス', 'sum'),
             左サイドからのクロス=('左サイドからのクロス', 'sum'),
         ).reset_index()
-        side_data = cross_data.melt(id_vars='チーム名')
+        cross_data['合計'] = cross_data['右サイドからのクロス'] + cross_data['左サイドからのクロス']
+        cross_data = cross_data.sort_values('合計', ascending=False)
+        side_data = cross_data[['チーム名','右サイドからのクロス','左サイドからのクロス']].melt(id_vars='チーム名')
         side_data['variable'] = side_data['variable'].str.replace('サイドからのクロス', '')
         fig = px.bar(side_data, x='チーム名', y='value', color='variable',
-                     barmode='group', title='左右サイドクロス比較',
+                     barmode='group', title='左右サイドクロス比較（降順）',
                      labels={'value': 'クロス数', 'variable': 'サイド'},
                      height=420)
         fig.update_layout(xaxis_tickangle=-45)
@@ -457,8 +463,11 @@ with tab3:
                 zone_data.append({'チーム名': team, 'ゾーン': zone, 'パス数': val})
     if zone_data:
         zone_df = pd.DataFrame(zone_data)
+        team_order = zone_df.groupby('チーム名')['パス数'].sum().sort_values(ascending=False).index.tolist()
+        zone_df['チーム名'] = pd.Categorical(zone_df['チーム名'], categories=team_order, ordered=True)
+        zone_df = zone_df.sort_values('チーム名')
         fig = px.bar(zone_df, x='チーム名', y='パス数', color='ゾーン',
-                     title='ゾーン別パス数（積み上げ）', barmode='stack', height=380)
+                     title='ゾーン別パス数（降順）', barmode='stack', height=380)
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
 
