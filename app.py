@@ -24,14 +24,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data
-def load_master(team_file, player_file):
+def load_master(team_file, player_file, league='J2/J3'):
     df_tm = pd.read_csv(team_file, encoding='cp932')
     df_pm = pd.read_csv(player_file, encoding='cp932')
 
-    # J2J3のみ
-    j2j3 = df_tm[df_tm['試合種別ID'] == 250].copy()
+    # リーグに応じてIDを切り替え（J1=249, J2/J3=250）
+    league_id = 249 if league == 'J1' else 250
+    target = df_tm[df_tm['試合種別ID'] == league_id].copy()
 
-    # チームカラー（R.G.B → rgb()形式）
     def parse_color(c):
         try:
             r, g, b = str(c).split('.')
@@ -39,20 +39,18 @@ def load_master(team_file, player_file):
         except:
             return 'rgb(128,128,128)'
 
-    team_master = j2j3[['チームID','チーム名略','所属グループ','チームカラー','チーム名']].copy()
+    team_master = target[['チームID','チーム名略','所属グループ','チームカラー','チーム名']].copy()
     team_master.columns = ['チームID','チーム名','グループ','チームカラー生','チームフルネーム']
     team_master['チームカラー'] = team_master['チームカラー生'].apply(parse_color)
     team_master = team_master.drop(columns=['チームカラー生'])
 
-    # 選手マスター（J2J3のみ）
-    j2j3_ids = j2j3['チームID'].tolist()
-    player_master = df_pm[df_pm['チームID'].isin(j2j3_ids)][
+    target_ids = target['チームID'].tolist()
+    player_master = df_pm[df_pm['チームID'].isin(target_ids)][
         ['選手ID','選手名','チーム名略','ポジション','背番号','身長','体重','生年月日',
          'Jリーグ通算出場数(J1)','Jリーグ通算出場数(J2)','Jリーグ通算出場数(J3)']
     ].copy()
     player_master.columns = ['選手ID','選手名','チーム名','ポジション','背番号','身長','体重','生年月日',
                               'J1通算','J2通算','J3通算']
-    # 年齢計算
     player_master['生年月日'] = pd.to_numeric(player_master['生年月日'], errors='coerce')
     player_master['年齢'] = player_master['生年月日'].apply(
         lambda x: 2026 - int(str(int(x))[:4]) if pd.notna(x) else None
@@ -216,6 +214,47 @@ def load_data(file):
 
     return df_team, df_player, extra
 
+
+@st.cache_data
+def load_apt_sheet(file):
+    """APTシートをそのまま読み込んでグループ別データを返す"""
+    xl = pd.ExcelFile(file)
+    if 'APT' not in xl.sheet_names:
+        return {}
+
+    df = pd.read_excel(xl, sheet_name='APT', header=None)
+
+    # ヘッダー行(row1)から列名取得
+    header = [str(c).replace('\n','') for c in df.iloc[1].tolist()]
+
+    # グループ別行範囲
+    group_ranges = {
+        'East A': (2, 11), 'East B': (13, 22),
+        'West A': (24, 33), 'West B': (35, 44),
+    }
+
+    apt_data = {}
+    for group, (r1, r2) in group_ranges.items():
+        rows = []
+        for i in range(r1, min(r2+1, len(df))):
+            row = df.iloc[i]
+            team = row[1]
+            if pd.isna(team) or str(team) in ['nan', group]: continue
+            rows.append({
+                'チーム名':      str(team),
+                'ボール保持率':  pd.to_numeric(row[2], errors='coerce'),
+                '保持率順位':    pd.to_numeric(row[3], errors='coerce'),
+                'APT':           str(row[4]).split('.')[0] if pd.notna(row[4]) else '-',
+                'APT順位':       pd.to_numeric(row[5], errors='coerce'),
+                '保持時間':      str(row[6]).split('.')[0] if pd.notna(row[6]) else '-',
+                '相手陣保持割合': pd.to_numeric(row[8], errors='coerce'),
+                '相手陣保持割合順位': pd.to_numeric(row[9], errors='coerce'),
+                '相手陣保持時間': str(row[10]).split('.')[0] if pd.notna(row[10]) else '-',
+            })
+        apt_data[group] = pd.DataFrame(rows)
+
+    return apt_data
+
 # ===== サイドバー =====
 with st.sidebar:
     st.markdown("## ⚽ Jリーグ 分析ツール")
@@ -244,6 +283,14 @@ with st.sidebar:
     df_team, df_player, extra = load_data(uploaded_file)
     st.success(f"✅ 読み込み完了")
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
+
+    # APTシート（任意）
+    apt_file = st.file_uploader("APTデータ XLSXをアップロード（任意）", type=["xlsx"], key="apt_upload")
+    apt_sheet_data = {}
+    if apt_file:
+        apt_sheet_data = load_apt_sheet(apt_file)
+        if apt_sheet_data:
+            st.success("✅ APTデータ読み込み完了")
 
     # マスターデータ自動読み込み（リポジトリに同梱）
     team_master   = None
@@ -1278,6 +1325,49 @@ with tab11:
     c2.metric("シュート", int(df_report['シュート'].sum()))
     c3.metric("パス成功率", f"{(df_report['パス成功数'].sum() / df_report['パス総数'].sum() * 100):.1f}%")
     c4.metric("ボール保持率", f"{(df_report['ボール保持率'].mean() * 100):.1f}%")
+
+    # ===== APTデータ =====
+    if apt_sheet_data:
+        st.markdown("---")
+        st.markdown("### ⏱️ ボール保持データ（APT）")
+
+        # 対象チームのグループを特定
+        team_group = None
+        for grp, df_grp in apt_sheet_data.items():
+            if report_team in df_grp['チーム名'].values:
+                team_group = grp
+                break
+
+        if team_group:
+            df_apt_grp = apt_sheet_data[team_group].copy()
+            df_apt_team = df_apt_grp[df_apt_grp['チーム名'] == report_team]
+
+            if not df_apt_team.empty:
+                r = df_apt_team.iloc[0]
+                ca1, ca2, ca3, ca4 = st.columns(4)
+                ca1.metric("ボール保持率", f"{r['ボール保持率']*100:.1f}%", f"グループ{int(r['保持率順位'])}位")
+                ca2.metric("APT（平均保持時間）", r['APT'], f"グループ{int(r['APT順位'])}位")
+                ca3.metric("保持時間", r['保持時間'])
+                ca4.metric("相手陣保持割合", f"{r['相手陣保持割合']*100:.1f}%", f"グループ{int(r['相手陣保持割合順位'])}位")
+
+            st.markdown(f"#### {team_group} グループ APT一覧")
+            # 保持率順でソート・パーセント表示
+            df_apt_display = df_apt_grp.copy()
+            df_apt_display['ボール保持率'] = (df_apt_display['ボール保持率'] * 100).round(1).astype(str) + '%'
+            df_apt_display['相手陣保持割合'] = (df_apt_display['相手陣保持割合'] * 100).round(1).astype(str) + '%'
+            df_apt_display = df_apt_display.sort_values('保持率順位')
+
+            # 対象チームをハイライト
+            def highlight_team(row):
+                if row['チーム名'] == report_team:
+                    return ['background-color: rgba(255,100,100,0.3)'] * len(row)
+                return [''] * len(row)
+
+            show_cols = ['チーム名','ボール保持率','保持率順位','APT','APT順位','保持時間','相手陣保持割合','相手陣保持割合順位','相手陣保持時間']
+            st.dataframe(
+                df_apt_display[show_cols].reset_index(drop=True).style.apply(highlight_team, axis=1),
+                use_container_width=True
+            )
 
     st.markdown("---")
 
