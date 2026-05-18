@@ -217,17 +217,22 @@ def load_data(file):
 
 @st.cache_data
 def load_apt_sheet(file):
-    """APTシートをそのまま読み込んでグループ別データを返す"""
+    """APTシートをグループ別に丸ごと読み込む"""
     xl = pd.ExcelFile(file)
     if 'APT' not in xl.sheet_names:
         return {}
 
     df = pd.read_excel(xl, sheet_name='APT', header=None)
 
-    # ヘッダー行(row1)から列名取得
-    header = [str(c).replace('\n','') for c in df.iloc[1].tolist()]
+    def fmt_time(v):
+        """時間文字列から秒以下を除去してmm:ssに整形"""
+        s = str(v).split('.')[0]
+        return s if s not in ['nan','NaT'] else '-'
 
-    # グループ別行範囲
+    def pct(v):
+        try: return f"{float(v)*100:.1f}%"
+        except: return '-'
+
     group_ranges = {
         'East A': (2, 11), 'East B': (13, 22),
         'West A': (24, 33), 'West B': (35, 44),
@@ -239,17 +244,23 @@ def load_apt_sheet(file):
         for i in range(r1, min(r2+1, len(df))):
             row = df.iloc[i]
             team = row[1]
-            if pd.isna(team) or str(team) in ['nan', group]: continue
+            if pd.isna(team) or str(team) == group: continue
+
             rows.append({
-                'チーム名':      str(team),
-                'ボール保持率':  pd.to_numeric(row[2], errors='coerce'),
-                '保持率順位':    pd.to_numeric(row[3], errors='coerce'),
-                'APT':           str(row[4]).split('.')[0] if pd.notna(row[4]) else '-',
-                'APT順位':       pd.to_numeric(row[5], errors='coerce'),
-                '保持時間':      str(row[6]).split('.')[0] if pd.notna(row[6]) else '-',
-                '相手陣保持割合': pd.to_numeric(row[8], errors='coerce'),
-                '相手陣保持割合順位': pd.to_numeric(row[9], errors='coerce'),
-                '相手陣保持時間': str(row[10]).split('.')[0] if pd.notna(row[10]) else '-',
+                'チーム名':          str(team),
+                'ボール保持率':      pct(row[2]),
+                '保持率順位':        int(row[3]) if pd.notna(row[3]) else '-',
+                'APT（分:秒）':      fmt_time(row[4]),
+                'APT順位':           int(row[5]) if pd.notna(row[5]) else '-',
+                'ボール保持時間':    fmt_time(row[6]),
+                '相手陣保持割合':    pct(row[8]),
+                '相手陣保持割合順位': int(row[9]) if pd.notna(row[9]) else '-',
+                '相手陣保持時間':    fmt_time(row[10]),
+                '保持率1位試合':     f"{pct(row[11])} vs {str(row[12]).split('.')[0] if pd.notna(row[12]) else '-'} ({str(row[13]).strip() if pd.notna(row[13]) else '-'}節)" if pd.notna(row[11]) else '-',
+                '保持率2位試合':     f"{pct(row[14])} vs {str(row[15]).strip() if pd.notna(row[15]) else '-'} ({str(row[16]).strip() if pd.notna(row[16]) else '-'}節)" if pd.notna(row[14]) else '-',
+                '保持率3位試合':     f"{pct(row[17])} vs {str(row[18]).strip() if pd.notna(row[18]) else '-'} ({str(row[19]).strip() if pd.notna(row[19]) else '-'}節)" if pd.notna(row[17]) else '-',
+                '保持率4位試合':     f"{pct(row[20])} vs {str(row[21]).strip() if pd.notna(row[21]) else '-'} ({str(row[22]).strip() if pd.notna(row[22]) else '-'}節)" if pd.notna(row[20]) else '-',
+                '保持率5位試合':     f"{pct(row[23])} vs {str(row[24]).strip() if pd.notna(row[24]) else '-'} ({str(row[25]).strip() if pd.notna(row[25]) else '-'}節)" if pd.notna(row[23]) else '-',
             })
         apt_data[group] = pd.DataFrame(rows)
 
@@ -1345,27 +1356,21 @@ with tab11:
             if not df_apt_team.empty:
                 r = df_apt_team.iloc[0]
                 ca1, ca2, ca3, ca4 = st.columns(4)
-                ca1.metric("ボール保持率", f"{r['ボール保持率']*100:.1f}%", f"グループ{int(r['保持率順位'])}位")
-                ca2.metric("APT（平均保持時間）", r['APT'], f"グループ{int(r['APT順位'])}位")
-                ca3.metric("保持時間", r['保持時間'])
-                ca4.metric("相手陣保持割合", f"{r['相手陣保持割合']*100:.1f}%", f"グループ{int(r['相手陣保持割合順位'])}位")
+                ca1.metric("ボール保持率", r['ボール保持率'], f"グループ{r['保持率順位']}位")
+                ca2.metric("APT（平均保持時間）", r['APT（分:秒）'], f"グループ{r['APT順位']}位")
+                ca3.metric("ボール保持時間", r['ボール保持時間'])
+                ca4.metric("相手陣保持割合", r['相手陣保持割合'], f"グループ{r['相手陣保持割合順位']}位")
 
             st.markdown(f"#### {team_group} グループ APT一覧")
-            # 保持率順でソート・パーセント表示
-            df_apt_display = df_apt_grp.copy()
-            df_apt_display['ボール保持率'] = (df_apt_display['ボール保持率'] * 100).round(1).astype(str) + '%'
-            df_apt_display['相手陣保持割合'] = (df_apt_display['相手陣保持割合'] * 100).round(1).astype(str) + '%'
-            df_apt_display = df_apt_display.sort_values('保持率順位')
 
             # 対象チームをハイライト
             def highlight_team(row):
-                if row['チーム名'] == report_team:
-                    return ['background-color: rgba(255,100,100,0.3)'] * len(row)
-                return [''] * len(row)
+                color = 'background-color: rgba(255,100,100,0.3)' if row['チーム名'] == report_team else ''
+                return [color] * len(row)
 
-            show_cols = ['チーム名','ボール保持率','保持率順位','APT','APT順位','保持時間','相手陣保持割合','相手陣保持割合順位','相手陣保持時間']
             st.dataframe(
-                df_apt_display[show_cols].reset_index(drop=True).style.apply(highlight_team, axis=1),
+                df_apt_grp.sort_values('保持率順位').reset_index(drop=True)
+                .style.apply(highlight_team, axis=1),
                 use_container_width=True
             )
 
