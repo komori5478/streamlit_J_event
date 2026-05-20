@@ -295,8 +295,18 @@ with st.sidebar:
     st.success(f"✅ 読み込み完了")
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
 
-    # APTシートをメインファイルから読み込み
-    apt_sheet_data = load_apt_sheet(uploaded_file)
+    # 分析用ファイル（APTシート等）
+    st.markdown("---")
+    st.markdown("### 📁 分析データ（任意）")
+    st.caption("2026_J2J3.xlsx等、APTシートを含むファイル")
+    analysis_file = st.file_uploader("分析用XLSXをアップロード", type=["xlsx"], key="analysis_upload")
+    apt_sheet_data = {}
+    if analysis_file:
+        apt_sheet_data = load_apt_sheet(analysis_file)
+        if apt_sheet_data:
+            st.success("✅ APTデータ読み込み完了")
+        else:
+            st.warning("APTシートが見つかりませんでした")
 
     # マスターデータ自動読み込み（リポジトリに同梱）
     team_master   = None
