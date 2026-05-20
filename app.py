@@ -372,7 +372,7 @@ with st.sidebar:
     else:
         teams_in_group = all_teams
 
-    selected_teams = st.multiselect("チームを選択", teams_in_group, default=teams_in_group[:6])
+    selected_teams = st.multiselect("チームを選択", teams_in_group, default=teams_in_group)
 
     rounds = sorted(df_team['節'].dropna().unique().astype(int))
     selected_rounds = st.slider(
@@ -384,7 +384,6 @@ with st.sidebar:
 # ===== データフィルタリング =====
 if not selected_teams:
     st.warning("サイドバーでチームを選択してください")
-    st.stop()
 
 df_filtered = df_team[
     (df_team['チーム名'].isin(selected_teams)) &
