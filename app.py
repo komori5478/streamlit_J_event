@@ -185,10 +185,58 @@ def load_data(file):
 
     # ボール保持率
     if 'ボール保持率' in df_team.columns:
-        apt_agg = df_team.groupby('チーム名').agg(
-            保持率=('ボール保持率','mean'),
-        ).reset_index()
+        apt_agg = df_team.groupby('チーム名').agg(保持率=('ボール保持率','mean')).reset_index()
         extra['apt'] = apt_agg
+
+    # ===== APT分析データ =====
+    apt_cols = ['ボール保持率','APT','ボール保持時間','相手陣保持割合','相手陣保持時間']
+    time_cols = ['保持率0-15','保持率16-30','保持率31-45','保持率前半AT',
+                 '保持率46-60','保持率61-75','保持率76-90','保持率後半AT']
+    opp_time_cols = ['相手陣保持率0-15','相手陣保持率16-30','相手陣保持率31-45',
+                     '相手陣保持率46-60','相手陣保持率61-75','相手陣保持率76-90']
+
+    apt_available = [c for c in apt_cols if c in df_team.columns]
+    if apt_available:
+        apt_team = df_team.groupby('チーム名')[apt_available].mean().reset_index()
+
+        # APT・時間列を「分:秒」文字列に変換
+        def td_to_mmss(td):
+            try:
+                total_sec = int(pd.Timedelta(td).total_seconds())
+                return f"{total_sec//60}:{total_sec%60:02d}"
+            except:
+                return '-'
+
+        for col in ['APT','ボール保持時間','相手陣保持時間']:
+            if col in apt_team.columns:
+                apt_team[f'{col}_str'] = df_team.groupby('チーム名')[col].mean().apply(td_to_mmss)
+
+        # 時間帯別保持率（平均）
+        tc_avail = [c for c in time_cols if c in df_team.columns]
+        if tc_avail:
+            apt_team_time = df_team.groupby('チーム名')[tc_avail].mean().reset_index()
+            apt_team = apt_team.merge(apt_team_time, on='チーム名', how='left')
+
+        # 相手陣時間帯別
+        oc_avail = [c for c in opp_time_cols if c in df_team.columns]
+        if oc_avail:
+            apt_team_opp = df_team.groupby('チーム名')[oc_avail].mean().reset_index()
+            apt_team = apt_team.merge(apt_team_opp, on='チーム名', how='left')
+
+        # 試合ごとの保持率上位5試合
+        top5_records = []
+        for team in df_team['チーム名'].unique():
+            df_t = df_team[df_team['チーム名'] == team].nlargest(5, 'ボール保持率')
+            for rank, (_, row) in enumerate(df_t.iterrows(), 1):
+                top5_records.append({
+                    'チーム名': team,
+                    'rank': rank,
+                    '節': int(row['節']),
+                    '相手': row['相手チーム名'],
+                    '保持率': f"{row['ボール保持率']*100:.1f}%"
+                })
+        extra['apt_top5'] = pd.DataFrame(top5_records)
+        extra['apt_team'] = apt_team
 
     # ===== 被チャンスクリエイト（チーム単位）=====
     # 相手チームのスルーパス成功数 + クロス成功数 + ラストパスを逆算
@@ -294,19 +342,6 @@ with st.sidebar:
     df_team, df_player, extra = load_data(uploaded_file)
     st.success(f"✅ 読み込み完了")
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
-
-    # 分析用ファイル（APTシート等）
-    st.markdown("---")
-    st.markdown("### 📁 分析データ（任意）")
-    st.caption("2026_J2J3.xlsx等、APTシートを含むファイル")
-    analysis_file = st.file_uploader("分析用XLSXをアップロード", type=["xlsx"], key="analysis_upload")
-    apt_sheet_data = {}
-    if analysis_file:
-        apt_sheet_data = load_apt_sheet(analysis_file)
-        if apt_sheet_data:
-            st.success("✅ APTデータ読み込み完了")
-        else:
-            st.warning("APTシートが見つかりませんでした")
 
     # マスターデータ自動読み込み（リポジトリに同梱）
     team_master   = None
@@ -1307,89 +1342,134 @@ st.caption('J2/J3 2026シーズン イベントデータ分析ツール | Powere
 # ===== タブ11: APT（ボール保持） =====
 with tab11:
     st.markdown("## ⏱️ APT（ボール保持）分析")
-    st.caption("APT = Average Possession Time（平均保持時間）")
+    st.caption("APT = Average Possession Time（平均保持時間）　各値は選択節の平均")
 
-    if not apt_sheet_data:
-        st.warning("APTデータが見つかりません。APTシートを含むXLSXをアップロードしてください。")
+    df_apt_team = extra.get('apt_team', pd.DataFrame())
+    df_apt_top5 = extra.get('apt_top5', pd.DataFrame())
+
+    if df_apt_team.empty:
+        st.warning("APTデータが見つかりません")
     else:
-        groups = list(apt_sheet_data.keys())
-        sel_groups = st.multiselect("グループを選択", groups, default=groups)
+        df_apt_f = df_apt_team[df_apt_team['チーム名'].isin(selected_teams)].copy() if selected_teams else df_apt_team.copy()
 
-        # 選択グループのデータを結合
-        df_apt_all = pd.concat(
-            [apt_sheet_data[g].assign(グループ=g) for g in sel_groups if g in apt_sheet_data],
-            ignore_index=True
-        )
+        # ===== メインテーブル =====
+        st.markdown("### 📋 ボール保持サマリー")
 
-        if df_apt_all.empty:
-            st.warning("データがありません")
-        else:
-            st.markdown("---")
+        # 表示用に整形
+        disp = df_apt_f[['チーム名']].copy()
+        if 'ボール保持率' in df_apt_f.columns:
+            disp['ボール保持率'] = (df_apt_f['ボール保持率'] * 100).round(1).astype(str) + '%'
+        if 'APT_str' in df_apt_f.columns:
+            disp['APT（分:秒）'] = df_apt_f['APT_str']
+        if 'ボール保持時間_str' in df_apt_f.columns:
+            disp['ボール保持時間'] = df_apt_f['ボール保持時間_str']
+        if '相手陣保持割合' in df_apt_f.columns:
+            disp['相手陣保持割合'] = (df_apt_f['相手陣保持割合'] * 100).round(1).astype(str) + '%'
+        if '相手陣保持時間_str' in df_apt_f.columns:
+            disp['相手陣保持時間'] = df_apt_f['相手陣保持時間_str']
 
-            # グループ別テーブル表示
-            for grp in sel_groups:
-                if grp not in apt_sheet_data: continue
-                df_g = apt_sheet_data[grp].copy()
-                st.markdown(f"### {grp}")
+        # 保持率でソート
+        if 'ボール保持率' in df_apt_f.columns:
+            disp = disp.iloc[df_apt_f['ボール保持率'].argsort()[::-1].values]
+        st.dataframe(disp.reset_index(drop=True), use_container_width=True, hide_index=True)
 
-                # 基本指標テーブル
-                basic_cols = ['チーム名','ボール保持率','保持率順位','APT（分:秒）','APT順位',
-                              'ボール保持時間','相手陣保持割合','相手陣保持割合順位','相手陣保持時間']
-                st.dataframe(
-                    df_g[basic_cols].sort_values('保持率順位').reset_index(drop=True),
-                    use_container_width=True, hide_index=True
-                )
+        st.markdown("---")
 
-                # 保持率が多かった試合TOP5
-                with st.expander(f"{grp} — 保持率が高かった試合 TOP5"):
-                    top5_cols = ['チーム名','保持率1位試合','保持率2位試合','保持率3位試合','保持率4位試合','保持率5位試合']
-                    st.dataframe(
-                        df_g[top5_cols].sort_values('チーム名').reset_index(drop=True),
-                        use_container_width=True, hide_index=True
-                    )
-
-            st.markdown("---")
-            st.markdown("### 📊 グループ横断グラフ")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                # 保持率棒グラフ（グループ色分け）
-                import plotly.express as px
-                # 保持率を数値に戻す
-                df_plot = df_apt_all.copy()
-                df_plot['保持率_num'] = df_plot['ボール保持率'].str.replace('%','').astype(float)
+        # ===== グラフ =====
+        col1, col2 = st.columns(2)
+        with col1:
+            if 'ボール保持率' in df_apt_f.columns:
                 fig = px.bar(
-                    df_plot.sort_values('保持率_num', ascending=True),
-                    x='保持率_num', y='チーム名', color='グループ',
-                    orientation='h', title='ボール保持率（降順）',
-                    labels={'保持率_num': 'ボール保持率(%)'},
-                    height=max(400, len(df_plot)*22)
+                    df_apt_f.sort_values('ボール保持率', ascending=True),
+                    x=(df_apt_f.sort_values('ボール保持率', ascending=True)['ボール保持率']*100).round(1),
+                    y='チーム名', orientation='h',
+                    color=(df_apt_f.sort_values('ボール保持率', ascending=True)['ボール保持率']*100).round(1),
+                    color_continuous_scale='Blues',
+                    title='ボール保持率ランキング（平均）',
+                    labels={'x':'ボール保持率(%)'},
+                    height=max(400, len(df_apt_f)*22)
                 )
-                fig.add_vline(x=50, line_dash='dash', line_color='white', opacity=0.5)
+                fig.add_vline(x=50, line_dash='dash', line_color='white', opacity=0.5,
+                              annotation_text='50%', annotation_font_color='white')
                 st.plotly_chart(fig, use_container_width=True)
 
-            with col2:
-                # 相手陣保持割合棒グラフ
-                df_plot['相手陣_num'] = df_plot['相手陣保持割合'].str.replace('%','').astype(float)
+        with col2:
+            if '相手陣保持割合' in df_apt_f.columns:
                 fig2 = px.bar(
-                    df_plot.sort_values('相手陣_num', ascending=True),
-                    x='相手陣_num', y='チーム名', color='グループ',
-                    orientation='h', title='相手陣保持割合（降順）',
-                    labels={'相手陣_num': '相手陣保持割合(%)'},
-                    height=max(400, len(df_plot)*22)
+                    df_apt_f.sort_values('相手陣保持割合', ascending=True),
+                    x=(df_apt_f.sort_values('相手陣保持割合', ascending=True)['相手陣保持割合']*100).round(1),
+                    y='チーム名', orientation='h',
+                    color=(df_apt_f.sort_values('相手陣保持割合', ascending=True)['相手陣保持割合']*100).round(1),
+                    color_continuous_scale='Greens',
+                    title='相手陣保持割合ランキング（平均）',
+                    labels={'x':'相手陣保持割合(%)'},
+                    height=max(400, len(df_apt_f)*22)
                 )
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # 保持率 vs 相手陣保持割合 散布図
+        # 保持率 vs 相手陣保持割合 散布図
+        if 'ボール保持率' in df_apt_f.columns and '相手陣保持割合' in df_apt_f.columns:
             fig3 = px.scatter(
-                df_plot, x='保持率_num', y='相手陣_num',
-                text='チーム名', color='グループ',
+                df_apt_f,
+                x=(df_apt_f['ボール保持率']*100).round(1),
+                y=(df_apt_f['相手陣保持割合']*100).round(1),
+                text='チーム名',
+                color=(df_apt_f['ボール保持率']*100).round(1),
+                color_continuous_scale='Blues',
                 title='ボール保持率 vs 相手陣保持割合（右上＝主導権を握り前線でも保持）',
-                labels={'保持率_num':'ボール保持率(%)','相手陣_num':'相手陣保持割合(%)'},
-                height=500
+                labels={'x':'ボール保持率(%)','y':'相手陣保持割合(%)'},
+                height=480
             )
             fig3.update_traces(textposition='top center')
+            fig3.add_vline(x=50, line_dash='dash', line_color='gray', opacity=0.4)
             st.plotly_chart(fig3, use_container_width=True)
+
+        # ===== 時間帯別保持率ヒートマップ =====
+        time_labels = {'保持率0-15':'0-15','保持率16-30':'16-30','保持率31-45':'31-45',
+                       '保持率前半AT':'前半AT','保持率46-60':'46-60','保持率61-75':'61-75',
+                       '保持率76-90':'76-90','保持率後半AT':'後半AT'}
+        tc_avail = {k:v for k,v in time_labels.items() if k in df_apt_f.columns}
+        if tc_avail:
+            st.markdown("### 🕐 時間帯別ボール保持率ヒートマップ")
+            pivot = df_apt_f.set_index('チーム名')[list(tc_avail.keys())]
+            pivot.columns = list(tc_avail.values())
+            pivot = (pivot * 100).round(1)
+            fig4 = px.imshow(
+                pivot, color_continuous_scale='RdYlGn',
+                title='時間帯別ボール保持率（平均%）',
+                labels=dict(x='時間帯', y='チーム名', color='保持率(%)'),
+                zmin=30, zmax=70, aspect='auto',
+                height=max(350, len(df_apt_f)*22)
+            )
+            fig4.add_vline(x=3.5, line_color='white', line_width=2)  # 前後半の区切り
+            st.plotly_chart(fig4, use_container_width=True)
+
+        # ===== 保持率が高かった試合TOP5 =====
+        if not df_apt_top5.empty:
+            st.markdown("### 🏆 保持率が高かった試合 TOP5")
+            top5_f = df_apt_top5[df_apt_top5['チーム名'].isin(selected_teams)].copy() if selected_teams else df_apt_top5.copy()
+
+            # ピボットして横並びに
+            top5_pivot = top5_f.pivot_table(
+                index='チーム名', columns='rank',
+                values=['節','相手','保持率'], aggfunc='first'
+            )
+            top5_pivot.columns = [f'{r}位_{c}' for c, r in top5_pivot.columns]
+
+            # 見やすい形に整形
+            result_rows = []
+            for team in top5_f['チーム名'].unique():
+                row = {'チーム名': team}
+                for rank in range(1, 6):
+                    t = top5_f[(top5_f['チーム名']==team) & (top5_f['rank']==rank)]
+                    if not t.empty:
+                        r = t.iloc[0]
+                        row[f'{rank}位'] = f"{r['保持率']} vs {r['相手']}（第{r['節']}節）"
+                    else:
+                        row[f'{rank}位'] = '-'
+                result_rows.append(row)
+
+            st.dataframe(pd.DataFrame(result_rows).set_index('チーム名'), use_container_width=True)
 
 # ===== タブ12: チーム詳細レポート =====
 with tab12:
