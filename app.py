@@ -544,6 +544,70 @@ with tab2:
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
 
+    # ===== ゴールパターン =====
+    st.markdown("---")
+    st.markdown("### 🥅 ゴールパターン分析")
+
+    gp_cols = [c for c in df_team.columns if 'ゴールパターン' in c]
+    extra_goal_cols = [c for c in df_team.columns if c in ['PKゴール','直接FKゴール','PA内ゴール','PA外ゴール']]
+
+    if gp_cols:
+        gp_agg = df_filtered.groupby('チーム名')[gp_cols].sum().reset_index()
+        gp_agg.columns = ['チーム名'] + [c.replace('ゴールパターン','').strip() for c in gp_cols]
+        gp_agg['合計'] = gp_agg.iloc[:, 1:].sum(axis=1)
+        gp_agg = gp_agg.sort_values('合計', ascending=False)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            # 積み上げ棒グラフ
+            pattern_cols = [c.replace('ゴールパターン','').strip() for c in gp_cols]
+            fig_gp = px.bar(
+                gp_agg.melt(id_vars='チーム名', value_vars=pattern_cols),
+                x='チーム名', y='value', color='variable',
+                barmode='stack',
+                title='ゴールパターン内訳（降順）',
+                labels={'value':'得点数','variable':'パターン'},
+                height=450
+            )
+            fig_gp.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_gp, use_container_width=True)
+
+        with col2:
+            # セットプレー vs オープンプレー 円グラフ（全体）
+            sp_col = next((c for c in gp_agg.columns if 'セットプレー' in c), None)
+            if sp_col:
+                total_sp = gp_agg[sp_col].sum()
+                total_op = gp_agg['合計'].sum() - total_sp
+                fig_pie = px.pie(
+                    values=[total_op, total_sp],
+                    names=['オープンプレー','セットプレー'],
+                    title='全体ゴールパターン割合',
+                    color_discrete_sequence=['#2ecc71','#9b59b6'],
+                    height=450
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+        # PA内外ゴール + PK + 直接FK
+        if extra_goal_cols:
+            eg_agg = df_filtered.groupby('チーム名')[extra_goal_cols].sum().reset_index()
+            eg_agg['合計'] = eg_agg[extra_goal_cols].sum(axis=1)
+            eg_agg = eg_agg.sort_values('合計', ascending=False)
+
+            fig_eg = px.bar(
+                eg_agg.melt(id_vars='チーム名', value_vars=extra_goal_cols),
+                x='チーム名', y='value', color='variable',
+                barmode='stack',
+                title='PA内外・PK・直接FKゴール内訳',
+                labels={'value':'得点数','variable':'種別'},
+                height=420
+            )
+            fig_eg.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig_eg, use_container_width=True)
+
+        # データテーブル
+        st.markdown("#### 📋 ゴールパターンデータ一覧")
+        st.dataframe(gp_agg.drop(columns='合計').reset_index(drop=True), use_container_width=True)
+
 # ===== タブ3: パス・ポゼッション =====
 with tab3:
     st.markdown("## パス・ポゼッション分析")
