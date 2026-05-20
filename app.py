@@ -295,13 +295,8 @@ with st.sidebar:
     st.success(f"✅ 読み込み完了")
     st.caption(f"チームデータ: {len(df_team)}行 / 選手データ: {len(df_player)}行")
 
-    # APTシート（任意）
-    apt_file = st.file_uploader("APTデータ XLSXをアップロード（任意）", type=["xlsx"], key="apt_upload")
-    apt_sheet_data = {}
-    if apt_file:
-        apt_sheet_data = load_apt_sheet(apt_file)
-        if apt_sheet_data:
-            st.success("✅ APTデータ読み込み完了")
+    # APTシートをメインファイルから読み込み
+    apt_sheet_data = load_apt_sheet(uploaded_file)
 
     # マスターデータ自動読み込み（リポジトリに同梱）
     team_master   = None
