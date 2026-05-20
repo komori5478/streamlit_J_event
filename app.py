@@ -361,9 +361,10 @@ else:
     st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
 
 # ===== タブ =====
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
     "📊 チーム比較", "⚽ シュート分析", "🎯 パス・ポゼッション", "🏃 選手分析", "📈 時系列トレンド",
-    "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析", "📋 チーム詳細レポート"
+    "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析",
+    "⏱️ APT（ボール保持）", "📋 チーム詳細レポート"
 ])
 
 # ===== タブ1: チーム比較 =====
@@ -1293,8 +1294,95 @@ with tab10:
 st.markdown('---')
 st.caption('J2/J3 2026シーズン イベントデータ分析ツール | Powered by Streamlit & Plotly')
 
-# ===== タブ11: チーム詳細レポート =====
+# ===== タブ11: APT（ボール保持） =====
 with tab11:
+    st.markdown("## ⏱️ APT（ボール保持）分析")
+    st.caption("APT = Average Possession Time（平均保持時間）")
+
+    if not apt_sheet_data:
+        st.warning("APTデータが見つかりません。APTシートを含むXLSXをアップロードしてください。")
+    else:
+        groups = list(apt_sheet_data.keys())
+        sel_groups = st.multiselect("グループを選択", groups, default=groups)
+
+        # 選択グループのデータを結合
+        df_apt_all = pd.concat(
+            [apt_sheet_data[g].assign(グループ=g) for g in sel_groups if g in apt_sheet_data],
+            ignore_index=True
+        )
+
+        if df_apt_all.empty:
+            st.warning("データがありません")
+        else:
+            st.markdown("---")
+
+            # グループ別テーブル表示
+            for grp in sel_groups:
+                if grp not in apt_sheet_data: continue
+                df_g = apt_sheet_data[grp].copy()
+                st.markdown(f"### {grp}")
+
+                # 基本指標テーブル
+                basic_cols = ['チーム名','ボール保持率','保持率順位','APT（分:秒）','APT順位',
+                              'ボール保持時間','相手陣保持割合','相手陣保持割合順位','相手陣保持時間']
+                st.dataframe(
+                    df_g[basic_cols].sort_values('保持率順位').reset_index(drop=True),
+                    use_container_width=True, hide_index=True
+                )
+
+                # 保持率が多かった試合TOP5
+                with st.expander(f"{grp} — 保持率が高かった試合 TOP5"):
+                    top5_cols = ['チーム名','保持率1位試合','保持率2位試合','保持率3位試合','保持率4位試合','保持率5位試合']
+                    st.dataframe(
+                        df_g[top5_cols].sort_values('チーム名').reset_index(drop=True),
+                        use_container_width=True, hide_index=True
+                    )
+
+            st.markdown("---")
+            st.markdown("### 📊 グループ横断グラフ")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                # 保持率棒グラフ（グループ色分け）
+                import plotly.express as px
+                # 保持率を数値に戻す
+                df_plot = df_apt_all.copy()
+                df_plot['保持率_num'] = df_plot['ボール保持率'].str.replace('%','').astype(float)
+                fig = px.bar(
+                    df_plot.sort_values('保持率_num', ascending=True),
+                    x='保持率_num', y='チーム名', color='グループ',
+                    orientation='h', title='ボール保持率（降順）',
+                    labels={'保持率_num': 'ボール保持率(%)'},
+                    height=max(400, len(df_plot)*22)
+                )
+                fig.add_vline(x=50, line_dash='dash', line_color='white', opacity=0.5)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                # 相手陣保持割合棒グラフ
+                df_plot['相手陣_num'] = df_plot['相手陣保持割合'].str.replace('%','').astype(float)
+                fig2 = px.bar(
+                    df_plot.sort_values('相手陣_num', ascending=True),
+                    x='相手陣_num', y='チーム名', color='グループ',
+                    orientation='h', title='相手陣保持割合（降順）',
+                    labels={'相手陣_num': '相手陣保持割合(%)'},
+                    height=max(400, len(df_plot)*22)
+                )
+                st.plotly_chart(fig2, use_container_width=True)
+
+            # 保持率 vs 相手陣保持割合 散布図
+            fig3 = px.scatter(
+                df_plot, x='保持率_num', y='相手陣_num',
+                text='チーム名', color='グループ',
+                title='ボール保持率 vs 相手陣保持割合（右上＝主導権を握り前線でも保持）',
+                labels={'保持率_num':'ボール保持率(%)','相手陣_num':'相手陣保持割合(%)'},
+                height=500
+            )
+            fig3.update_traces(textposition='top center')
+            st.plotly_chart(fig3, use_container_width=True)
+
+# ===== タブ12: チーム詳細レポート =====
+with tab12:
     st.markdown("## 📋 チーム詳細レポート")
 
     # チーム選択
