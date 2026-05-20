@@ -1511,41 +1511,54 @@ with tab12:
     c4.metric("ボール保持率", f"{(df_report['ボール保持率'].mean() * 100):.1f}%")
 
     # ===== APTデータ =====
-    if apt_sheet_data:
+    df_apt_team = extra.get('apt_team', pd.DataFrame())
+    df_apt_top5 = extra.get('apt_top5', pd.DataFrame())
+    if not df_apt_team.empty:
         st.markdown("---")
         st.markdown("### ⏱️ ボール保持データ（APT）")
 
-        # 対象チームのグループを特定
-        team_group = None
-        for grp, df_grp in apt_sheet_data.items():
-            if report_team in df_grp['チーム名'].values:
-                team_group = grp
-                break
+        df_apt_r = df_apt_team[df_apt_team['チーム名'] == report_team]
+        if not df_apt_r.empty:
+            r = df_apt_r.iloc[0]
+            ca1, ca2, ca3, ca4 = st.columns(4)
+            ca1.metric("ボール保持率", f"{r['ボール保持率']*100:.1f}%" if pd.notna(r.get('ボール保持率')) else '-')
+            ca2.metric("APT（平均保持時間）", r.get('APT_str', '-'))
+            ca3.metric("ボール保持時間", r.get('ボール保持時間_str', '-'))
+            ca4.metric("相手陣保持割合", f"{r['相手陣保持割合']*100:.1f}%" if pd.notna(r.get('相手陣保持割合')) else '-')
 
-        if team_group:
-            df_apt_grp = apt_sheet_data[team_group].copy()
-            df_apt_team = df_apt_grp[df_apt_grp['チーム名'] == report_team]
+        # 全チームとの比較テーブル
+        st.markdown("#### 全チーム APT一覧")
+        disp = df_apt_team[['チーム名']].copy()
+        if 'ボール保持率' in df_apt_team.columns:
+            disp['ボール保持率'] = (df_apt_team['ボール保持率']*100).round(1).astype(str) + '%'
+        if 'APT_str' in df_apt_team.columns:
+            disp['APT（分:秒）'] = df_apt_team['APT_str']
+        if 'ボール保持時間_str' in df_apt_team.columns:
+            disp['ボール保持時間'] = df_apt_team['ボール保持時間_str']
+        if '相手陣保持割合' in df_apt_team.columns:
+            disp['相手陣保持割合'] = (df_apt_team['相手陣保持割合']*100).round(1).astype(str) + '%'
+        if '相手陣保持時間_str' in df_apt_team.columns:
+            disp['相手陣保持時間'] = df_apt_team['相手陣保持時間_str']
 
-            if not df_apt_team.empty:
-                r = df_apt_team.iloc[0]
-                ca1, ca2, ca3, ca4 = st.columns(4)
-                ca1.metric("ボール保持率", r['ボール保持率'], f"グループ{r['保持率順位']}位")
-                ca2.metric("APT（平均保持時間）", r['APT（分:秒）'], f"グループ{r['APT順位']}位")
-                ca3.metric("ボール保持時間", r['ボール保持時間'])
-                ca4.metric("相手陣保持割合", r['相手陣保持割合'], f"グループ{r['相手陣保持割合順位']}位")
+        if 'ボール保持率' in df_apt_team.columns:
+            disp = disp.iloc[df_apt_team['ボール保持率'].argsort()[::-1].values]
 
-            st.markdown(f"#### {team_group} グループ APT一覧")
+        def highlight_report_team(row):
+            return ['background-color: rgba(255,100,100,0.3)' if row['チーム名'] == report_team else ''] * len(row)
 
-            # 対象チームをハイライト
-            def highlight_team(row):
-                color = 'background-color: rgba(255,100,100,0.3)' if row['チーム名'] == report_team else ''
-                return [color] * len(row)
+        st.dataframe(
+            disp.reset_index(drop=True).style.apply(highlight_report_team, axis=1),
+            use_container_width=True
+        )
 
-            st.dataframe(
-                df_apt_grp.sort_values('保持率順位').reset_index(drop=True)
-                .style.apply(highlight_team, axis=1),
-                use_container_width=True
-            )
+        # 保持率上位5試合
+        if not df_apt_top5.empty:
+            top5_r = df_apt_top5[df_apt_top5['チーム名'] == report_team]
+            if not top5_r.empty:
+                st.markdown("#### 保持率が高かった試合 TOP5")
+                top5_disp = top5_r[['rank','保持率','相手','節']].copy()
+                top5_disp.columns = ['順位','保持率','相手チーム','節']
+                st.dataframe(top5_disp.reset_index(drop=True), use_container_width=True, hide_index=True)
 
     st.markdown("---")
 
