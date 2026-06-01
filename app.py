@@ -238,6 +238,48 @@ def load_data(file):
         extra['apt_top5'] = pd.DataFrame(top5_records)
         extra['apt_team'] = apt_team
 
+    # ===== 被データ一括計算（相手チームの攻撃データを自チームの被データとして集計）=====
+    df_opp_base = df_team[['節','チーム名','相手チーム名']].copy()
+    df_opp_base = df_opp_base.rename(columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+
+    # 被シュート系
+    shot_opp_cols = [c for c in df_team.columns if any(c == k for k in
+        ['シュート','枠内シュート','xG','PA内シュート','PA外シュート','PA内ゴール','PA外ゴール'])]
+    shot_opp_cols += [c for c in df_team.columns if 'シュートパターン' in c]
+    if shot_opp_cols:
+        df_so = df_team[['節','チーム名','相手チーム名'] + shot_opp_cols].rename(
+            columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+        a_shot = df_so.groupby('チーム名')[shot_opp_cols].sum().reset_index()
+        a_shot.columns = ['チーム名'] + ['被'+c for c in shot_opp_cols]
+        extra['a_shot_detail'] = a_shot
+
+    # 被パス系
+    pass_opp_cols = [c for c in df_team.columns if 'パス' in c]
+    if pass_opp_cols:
+        df_po = df_team[['節','チーム名','相手チーム名'] + pass_opp_cols].rename(
+            columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+        a_pass = df_po.groupby('チーム名')[pass_opp_cols].sum().reset_index()
+        a_pass.columns = ['チーム名'] + ['被'+c for c in pass_opp_cols]
+        extra['a_pass'] = a_pass
+
+    # 被クロス系
+    cross_opp_cols = [c for c in df_team.columns if 'クロス' in c]
+    if cross_opp_cols:
+        df_co = df_team[['節','チーム名','相手チーム名'] + cross_opp_cols].rename(
+            columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+        a_cross = df_co.groupby('チーム名')[cross_opp_cols].sum().reset_index()
+        a_cross.columns = ['チーム名'] + ['被'+c for c in cross_opp_cols]
+        extra['a_cross'] = a_cross
+
+    # 被PA進入系
+    pa_opp_cols = [c for c in df_team.columns if 'PA' in c or 'ニアゾーン' in c]
+    if pa_opp_cols:
+        df_pao = df_team[['節','チーム名','相手チーム名'] + pa_opp_cols].rename(
+            columns={'チーム名':'相手チーム名','相手チーム名':'チーム名'})
+        a_pa = df_pao.groupby('チーム名')[pa_opp_cols].sum().reset_index()
+        a_pa.columns = ['チーム名'] + ['被'+c for c in pa_opp_cols]
+        extra['a_pa'] = a_pa
+
     # ===== 被チャンスクリエイト（チーム単位）=====
     # 相手チームのスルーパス成功数 + クロス成功数 + ラストパスを逆算
     cc_cols = ['スルーパス成功数','クロス成功数','ラストパス']
@@ -608,6 +650,44 @@ with tab2:
         st.markdown("#### 📋 ゴールパターンデータ一覧")
         st.dataframe(gp_agg.drop(columns='合計').reset_index(drop=True), use_container_width=True)
 
+    # ===== 被シュートデータ =====
+    st.markdown("---")
+    st.markdown("### 🛡️ 被シュートデータ")
+    df_as = extra.get('a_shot_detail', pd.DataFrame())
+    if not df_as.empty:
+        df_as_f = df_as[df_as['チーム名'].isin(selected_teams)].copy() if selected_teams else df_as.copy()
+        # 被シュート・被枠内シュート・被xG
+        basic_a = [c for c in ['被シュート','被枠内シュート','被xG','被PA内シュート','被PA外シュート'] if c in df_as_f.columns]
+        if basic_a:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = px.bar(df_as_f.sort_values('被シュート', ascending=True) if '被シュート' in df_as_f.columns else df_as_f,
+                             x='被シュート', y='チーム名', orientation='h',
+                             color='被シュート', color_continuous_scale='Reds',
+                             title='被シュート数ランキング（少ないほど良い）',
+                             height=max(400, len(df_as_f)*22))
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                if '被枠内シュート' in df_as_f.columns and '被シュート' in df_as_f.columns:
+                    df_as_f['被枠内率'] = (df_as_f['被枠内シュート'] / df_as_f['被シュート'].replace(0, np.nan) * 100).round(1)
+                    fig2 = px.scatter(df_as_f, x='被シュート', y='被枠内率', text='チーム名',
+                                      color='被枠内率', color_continuous_scale='Reds',
+                                      title='被シュート数 vs 被枠内率', height=max(400, len(df_as_f)*22))
+                    fig2.update_traces(textposition='top center')
+                    st.plotly_chart(fig2, use_container_width=True)
+        # 被シュートパターン
+        a_sp_cols = [c for c in df_as_f.columns if '被シュートパターン' in c]
+        if a_sp_cols:
+            asp = df_as_f[['チーム名'] + a_sp_cols].copy()
+            asp.columns = ['チーム名'] + [c.replace('被シュートパターン','').strip() for c in a_sp_cols]
+            asp['合計'] = asp.iloc[:,1:].sum(axis=1)
+            asp = asp.sort_values('合計', ascending=False).drop(columns='合計')
+            fig3 = px.bar(asp.melt(id_vars='チーム名'), x='チーム名', y='value', color='variable',
+                          barmode='stack', title='被シュートパターン内訳（降順）',
+                          labels={'value':'被シュート数','variable':'パターン'}, height=400)
+            fig3.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig3, use_container_width=True)
+
 # ===== タブ3: パス・ポゼッション =====
 with tab3:
     st.markdown("## パス・ポゼッション分析")
@@ -664,6 +744,50 @@ with tab3:
                      title='ゾーン別パス数（降順）', barmode='stack', height=380)
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, use_container_width=True)
+
+    # ===== 被パスデータ =====
+    st.markdown("---")
+    st.markdown("### 🛡️ 被パスデータ")
+    df_ap = extra.get('a_pass', pd.DataFrame())
+    if not df_ap.empty:
+        df_ap_f = df_ap[df_ap['チーム名'].isin(selected_teams)].copy() if selected_teams else df_ap.copy()
+        basic_ap = [c for c in ['被パス総数','被パス成功数'] if c in df_ap_f.columns]
+        if basic_ap:
+            if '被パス成功数' in df_ap_f.columns and '被パス総数' in df_ap_f.columns:
+                df_ap_f['被パス成功率'] = (df_ap_f['被パス成功数'] / df_ap_f['被パス総数'].replace(0, np.nan) * 100).round(1)
+            col1, col2 = st.columns(2)
+            with col1:
+                if '被パス総数' in df_ap_f.columns:
+                    fig = px.bar(df_ap_f.sort_values('被パス総数', ascending=True),
+                                 x='被パス総数', y='チーム名', orientation='h',
+                                 color='被パス総数', color_continuous_scale='Oranges',
+                                 title='被パス総数（少ないほど守備良）',
+                                 height=max(400, len(df_ap_f)*22))
+                    st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                if '被パス成功率' in df_ap_f.columns:
+                    fig2 = px.bar(df_ap_f.sort_values('被パス成功率', ascending=True),
+                                  x='被パス成功率', y='チーム名', orientation='h',
+                                  color='被パス成功率', color_continuous_scale='Oranges',
+                                  title='相手パス成功率（低いほど守備良）',
+                                  labels={'被パス成功率':'相手パス成功率(%)'},
+                                  height=max(400, len(df_ap_f)*22))
+                    st.plotly_chart(fig2, use_container_width=True)
+        # ゾーン別被パス
+        dt_c = next((c for c in df_ap_f.columns if '被DT' in c and 'パス' in c), None)
+        mt_c = next((c for c in df_ap_f.columns if '被MT' in c and 'パス' in c), None)
+        at_c = next((c for c in df_ap_f.columns if '被AT' in c and 'パス' in c), None)
+        if dt_c and mt_c and at_c:
+            area = df_ap_f[['チーム名',dt_c,mt_c,at_c]].copy()
+            area.columns = ['チーム名','DT（守備）','MT（中盤）','AT（攻撃）']
+            area['合計'] = area[['DT（守備）','MT（中盤）','AT（攻撃）']].sum(axis=1)
+            team_order = area.sort_values('合計', ascending=False)['チーム名'].tolist()
+            area_m = area.drop(columns='合計').melt(id_vars='チーム名', var_name='エリア', value_name='パス数')
+            area_m['チーム名'] = pd.Categorical(area_m['チーム名'], categories=team_order, ordered=True)
+            fig3 = px.bar(area_m.sort_values('チーム名'), x='チーム名', y='パス数', color='エリア',
+                          barmode='stack', title='ゾーン別被パス数（降順）', height=400)
+            fig3.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig3, use_container_width=True)
 
 # ===== タブ4: 選手分析 =====
 with tab4:
@@ -1055,6 +1179,36 @@ with tab7:
         st.markdown("### 📋 PA関連データ一覧")
         st.dataframe(df_box_f.reset_index(drop=True), use_container_width=True)
 
+    # ===== 被PA進入データ =====
+    st.markdown("---")
+    st.markdown("### 🛡️ 被PA進入データ")
+    df_apa = extra.get('a_pa', pd.DataFrame())
+    if not df_apa.empty:
+        df_apa_f = df_apa[df_apa['チーム名'].isin(selected_teams)].copy() if selected_teams else df_apa.copy()
+        a_pa_col = next((c for c in df_apa_f.columns if '被PA内シュート' in c), None)
+        if a_pa_col:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = px.bar(df_apa_f.sort_values(a_pa_col, ascending=True),
+                             x=a_pa_col, y='チーム名', orientation='h',
+                             color=a_pa_col, color_continuous_scale='Reds',
+                             title='被PA内シュート数（少ないほど良い）',
+                             height=max(400, len(df_apa_f)*22))
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                a_pa_out = next((c for c in df_apa_f.columns if '被PA外シュート' in c), None)
+                if a_pa_out:
+                    df_pa_both = df_apa_f[['チーム名', a_pa_col, a_pa_out]].copy()
+                    df_pa_both['合計'] = df_pa_both[a_pa_col] + df_pa_both[a_pa_out]
+                    df_pa_both = df_pa_both.sort_values('合計', ascending=False)
+                    fig2 = go.Figure()
+                    fig2.add_trace(go.Bar(name='被PA内', x=df_pa_both['チーム名'], y=df_pa_both[a_pa_col], marker_color='#e74c3c'))
+                    fig2.add_trace(go.Bar(name='被PA外', x=df_pa_both['チーム名'], y=df_pa_both[a_pa_out], marker_color='#e67e22'))
+                    fig2.update_layout(barmode='stack', title='被PA内外シュート（降順）', xaxis_tickangle=-45, height=max(400, len(df_apa_f)*22))
+                    st.plotly_chart(fig2, use_container_width=True)
+        st.markdown("#### 📋 被PA進入データ一覧")
+        st.dataframe(df_apa_f.reset_index(drop=True), use_container_width=True)
+
 # ===== タブ8: パス詳細 =====
 with tab8:
     st.markdown("## 🏃 パス詳細分析")
@@ -1120,6 +1274,24 @@ with tab8:
         st.markdown("### 📋 パス詳細データ")
         st.dataframe(df_pass_f.sort_values('パス総数', ascending=False).reset_index(drop=True), use_container_width=True)
 
+    # ===== 被パス詳細データ =====
+    st.markdown("---")
+    st.markdown("### 🛡️ 被パス詳細データ")
+    df_ap2 = extra.get('a_pass', pd.DataFrame())
+    if not df_ap2.empty:
+        df_ap2_f = df_ap2[df_ap2['チーム名'].isin(selected_teams)].copy() if selected_teams else df_ap2.copy()
+        if '被パス総数' in df_ap2_f.columns:
+            if '被パス成功数' in df_ap2_f.columns:
+                df_ap2_f['被パス成功率'] = (df_ap2_f['被パス成功数'] / df_ap2_f['被パス総数'].replace(0, np.nan) * 100).round(1)
+            fig = px.scatter(df_ap2_f, x='被パス総数', y='被パス成功率' if '被パス成功率' in df_ap2_f.columns else df_ap2_f.columns[1],
+                             text='チーム名', color='被パス総数', color_continuous_scale='Oranges',
+                             title='被パス総数 vs 被パス成功率', height=420)
+            fig.update_traces(textposition='top center')
+            st.plotly_chart(fig, use_container_width=True)
+        st.markdown("#### 📋 被パス詳細データ一覧")
+        st.dataframe(df_ap2_f.sort_values('被パス総数', ascending=False).reset_index(drop=True) if '被パス総数' in df_ap2_f.columns else df_ap2_f.reset_index(drop=True),
+                     use_container_width=True)
+
 # ===== タブ9: クロス分析 =====
 with tab9:
     st.markdown("## ✂️ クロス詳細分析")
@@ -1166,6 +1338,45 @@ with tab9:
 
         st.markdown("### 📋 クロスデータ一覧")
         st.dataframe(df_cross_f.sort_values('クロス総数', ascending=False).reset_index(drop=True), use_container_width=True)
+
+    # ===== 被クロスデータ =====
+    st.markdown("---")
+    st.markdown("### 🛡️ 被クロスデータ")
+    df_ac = extra.get('a_cross', pd.DataFrame())
+    if not df_ac.empty:
+        df_ac_f = df_ac[df_ac['チーム名'].isin(selected_teams)].copy() if selected_teams else df_ac.copy()
+        a_cross_col = next((c for c in df_ac_f.columns if c == '被クロス総数'), None)
+        a_cross_succ = next((c for c in df_ac_f.columns if c == '被クロス成功数'), None)
+        if a_cross_col:
+            col1, col2 = st.columns(2)
+            with col1:
+                fig = px.bar(df_ac_f.sort_values(a_cross_col, ascending=True),
+                             x=a_cross_col, y='チーム名', orientation='h',
+                             color=a_cross_col, color_continuous_scale='Oranges',
+                             title='被クロス総数（少ないほど良い）',
+                             height=max(400, len(df_ac_f)*22))
+                st.plotly_chart(fig, use_container_width=True)
+            with col2:
+                if a_cross_succ and a_cross_col:
+                    df_ac_f['被クロス成功率'] = (df_ac_f[a_cross_succ] / df_ac_f[a_cross_col].replace(0, np.nan) * 100).round(1)
+                    fig2 = px.scatter(df_ac_f, x=a_cross_col, y='被クロス成功率',
+                                      text='チーム名', color='被クロス成功率',
+                                      color_continuous_scale='Reds',
+                                      title='被クロス数 vs 被クロス成功率', height=max(400, len(df_ac_f)*22))
+                    fig2.update_traces(textposition='top center')
+                    st.plotly_chart(fig2, use_container_width=True)
+        # 左右被クロス
+        a_r = next((c for c in df_ac_f.columns if '被右サイドからのクロス' == c), None)
+        a_l = next((c for c in df_ac_f.columns if '被左サイドからのクロス' == c), None)
+        if a_r and a_l:
+            df_ac_f['合計'] = df_ac_f[a_r] + df_ac_f[a_l]
+            df_ac_s = df_ac_f.sort_values('合計', ascending=False)
+            sd = df_ac_s[['チーム名',a_r,a_l]].melt(id_vars='チーム名')
+            sd['variable'] = sd['variable'].str.replace('被','').str.replace('サイドからのクロス','')
+            fig3 = px.bar(sd, x='チーム名', y='value', color='variable', barmode='group',
+                          title='被左右クロス比較（降順）', labels={'value':'被クロス数','variable':'サイド'}, height=400)
+            fig3.update_layout(xaxis_tickangle=-45)
+            st.plotly_chart(fig3, use_container_width=True)
 
 # ===== タブ10: 守備分析 =====
 with tab10:
