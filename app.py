@@ -405,10 +405,10 @@ else:
     st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
 
 # ===== タブ =====
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
     "📊 チーム比較", "⚽ シュート分析", "🎯 パス・ポゼッション", "🏃 選手分析", "📈 時系列トレンド",
     "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析",
-    "⏱️ APT（ボール保持）", "📋 チーム詳細レポート"
+    "⏱️ APT（ボール保持）", "📋 チーム詳細レポート", "🆚 対戦前分析"
 ])
 
 # ===== タブ1: チーム比較 =====
@@ -1762,3 +1762,207 @@ with tab12:
                 df_pos[show_cols].sort_values('出場時間', ascending=False).reset_index(drop=True),
                 use_container_width=True
             )
+
+# ===== タブ13: 対戦前分析 =====
+with tab13:
+    st.markdown("## 🆚 対戦前分析")
+    st.caption("自チームの強みと相手チームの弱点を照合して攻略ポイントを見つける")
+
+    all_team_list = sorted(df_team['チーム名'].dropna().unique())
+    col1, col2 = st.columns(2)
+    with col1:
+        my_team = st.selectbox("🟦 自チーム", all_team_list, key='my_team')
+    with col2:
+        opp_options = [t for t in all_team_list if t != my_team]
+        opp_team = st.selectbox("🟥 相手チーム", opp_options, key='opp_team')
+
+    st.markdown("---")
+
+    # 全節のデータを使用（節フィルターなし）
+    df_all = df_team.copy()
+
+    # 相手チームのシュート・PA進入を自チームへの「被」データとして逆算
+    df_opp = df_all[['節','チーム名','相手チーム名',
+                      'シュート','枠内シュート','xG','得点','失点',
+                      'PA内シュート','PA進入0-15','PA進入16-30','PA進入31-45','PA進入前半AT',
+                      'PA進入46-60','PA進入61-75','PA進入76-90','PA進入後半AT',
+                      'ゴールパターンセットプレーから','ゴールパターンクロスから',
+                      'スルーパス成功数','クロス成功数','ラストパス',
+                      'タックル奪取数','インターセプト','ファウル',
+                      'DTからのパス','MTからのパス','DTでのタックル奪取数','MTでのタックル奪取数','DTでのファウル',
+                      'ATでのタックル奪取数','MTでのタックル奪取数',
+                      ]].copy()
+
+    def team_stats(team):
+        """チームの集計値を返す"""
+        d = df_all[df_all['チーム名'] == team]
+        # 相手のデータ（被指標）
+        d_opp = df_all[df_all['相手チーム名'] == team]
+        n = len(d)
+        if n == 0:
+            return {}
+
+        stats = {
+            # 攻撃
+            '得点/試合':           round(d['得点'].sum() / n, 2),
+            'xG/試合':             round(d['xG'].sum() / n, 2),
+            'シュート/試合':       round(d['シュート'].sum() / n, 1),
+            'PA内シュート/試合':   round(d['PA内シュート'].sum() / n, 1),
+            'CC/試合':             round((d['スルーパス成功数'].sum() + d['クロス成功数'].sum() + d['ラストパス'].sum()) / n, 1),
+            'SP得点/試合':         round(d['ゴールパターンセットプレーから'].sum() / n, 2),
+            'クロス得点/試合':     round(d['ゴールパターンクロスから'].sum() / n, 2),
+            # 守備（相手のデータから）
+            '失点/試合':           round(d['失点'].sum() / n, 2),
+            '被シュート/試合':     round(d_opp['シュート'].sum() / n, 1),
+            '被PA進入/試合':       round(d_opp['PA内シュート'].sum() / n, 1),
+            '被CC/試合':           round((d_opp['スルーパス成功数'].sum() + d_opp['クロス成功数'].sum() + d_opp['ラストパス'].sum()) / n, 1),
+            '被SP得点/試合':       round(d_opp['ゴールパターンセットプレーから'].sum() / n, 2),
+            '被クロス得点/試合':   round(d_opp['ゴールパターンクロスから'].sum() / n, 2),
+            'PPDA':               round((d_opp['DTからのパス'].sum() + d_opp['MTからのパス'].sum()) /
+                                   max(d['ATでのタックル奪取数'].sum() + d['MTでのタックル奪取数'].sum() +
+                                       d['インターセプト'].sum() + d['ファウル'].sum() - d['DTでのファウル'].sum(), 1), 2),
+        }
+        return stats
+
+    my_stats  = team_stats(my_team)
+    opp_stats = team_stats(opp_team)
+
+    # リーグ平均
+    league_avg = {}
+    for k in my_stats:
+        vals = [team_stats(t).get(k, 0) for t in all_team_list]
+        league_avg[k] = round(np.mean(vals), 2)
+
+    # ===== KPI比較 =====
+    st.markdown(f"### 📊 基本指標比較")
+    c1, c2, c3 = st.columns(3)
+    for label, my_key, opp_key, good in [
+        ('得点/試合',     '得点/試合',       '失点/試合',       'high'),
+        ('xG/試合',       'xG/試合',         None,              'high'),
+        ('シュート/試合', 'シュート/試合',    '被シュート/試合', 'high'),
+        ('PA内シュート',  'PA内シュート/試合','被PA進入/試合',   'high'),
+        ('CC/試合',       'CC/試合',          '被CC/試合',       'high'),
+        ('PPDA',          'PPDA',             'PPDA',            'low'),
+    ]:
+        pass
+
+    # スコアカード形式
+    metrics_def = [
+        ('得点/試合',      '得点/試合',        '失点/試合'),
+        ('シュート/試合',  'シュート/試合',     '被シュート/試合'),
+        ('PA内シュート',   'PA内シュート/試合', '被PA進入/試合'),
+        ('CC/試合',        'CC/試合',           '被CC/試合'),
+        ('SP得点/試合',    'SP得点/試合',       '被SP得点/試合'),
+        ('クロス得点/試合','クロス得点/試合',   '被クロス得点/試合'),
+        ('PPDA',           'PPDA',              'PPDA'),
+    ]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"#### 🟦 {my_team}（攻撃指標）")
+        for label, my_k, _ in metrics_def:
+            val = my_stats.get(my_k, 0)
+            avg = league_avg.get(my_k, 0)
+            delta = round(val - avg, 2)
+            st.metric(label, val, f"平均比 {'+' if delta >= 0 else ''}{delta}")
+
+    with col2:
+        st.markdown(f"#### 🟥 {opp_team}（守備弱点指標）")
+        for label, _, opp_k in metrics_def:
+            val = opp_stats.get(opp_k, 0)
+            avg = league_avg.get(opp_k, 0)
+            delta = round(val - avg, 2)
+            # 守備指標は高いほど弱い（PPDAは低いほど強い）
+            if opp_k == 'PPDA':
+                arrow = f"平均比 {'+' if delta >= 0 else ''}{delta}"
+            else:
+                arrow = f"平均比 {'+' if delta >= 0 else ''}{delta}"
+            st.metric(label, val, arrow, delta_color='inverse' if opp_k not in ['PPDA'] else 'normal')
+
+    st.markdown("---")
+
+    # ===== 攻略ポイント =====
+    st.markdown("### 🎯 攻略ポイント")
+
+    points = []
+    avg_cc   = league_avg.get('被CC/試合', 0)
+    avg_pa   = league_avg.get('被PA進入/試合', 0)
+    avg_sp   = league_avg.get('被SP得点/試合', 0)
+    avg_cr   = league_avg.get('被クロス得点/試合', 0)
+    avg_ppda = league_avg.get('PPDA', 0)
+
+    if opp_stats.get('被CC/試合', 0) > avg_cc * 1.1:
+        points.append(("🎯 チャンスクリエイト", f"相手は被CC/試合 **{opp_stats['被CC/試合']}**（リーグ平均 {avg_cc}）。スルーパス・クロス・ラストパスで積極的にチャンスを作りやすい。"))
+    if opp_stats.get('被PA進入/試合', 0) > avg_pa * 1.1:
+        points.append(("📦 PA進入", f"相手は被PA進入/試合 **{opp_stats['被PA進入/試合']}**（リーグ平均 {avg_pa}）。ペナルティエリアへの侵入が有効。"))
+    if opp_stats.get('被SP得点/試合', 0) > avg_sp * 1.1:
+        points.append(("⚽ セットプレー", f"相手は被SP得点/試合 **{opp_stats['被SP得点/試合']}**（リーグ平均 {avg_sp}）。CK・FK等セットプレーが狙い目。"))
+    if opp_stats.get('被クロス得点/試合', 0) > avg_cr * 1.1:
+        points.append(("✂️ クロス攻撃", f"相手は被クロス得点/試合 **{opp_stats['被クロス得点/試合']}**（リーグ平均 {avg_cr}）。サイドからのクロス攻撃が有効。"))
+    if opp_stats.get('PPDA', 0) > avg_ppda * 1.1:
+        points.append(("🏃 ビルドアップ", f"相手のPPDA **{opp_stats['PPDA']}**（リーグ平均 {avg_ppda}）。プレスが緩いのでビルドアップから前進しやすい。"))
+
+    if points:
+        for title, desc in points:
+            st.success(f"**{title}**　{desc}")
+    else:
+        st.info("相手チームに明確な弱点は見つかりませんでした。バランスの取れたチームです。")
+
+    st.markdown("---")
+
+    # ===== 失点時間帯 =====
+    st.markdown("### ⏱️ 相手チームの失点時間帯（どの時間帯に弱いか）")
+
+    time_slots = ['0-15','16-30','31-45','前半AT','46-60','61-75','76-90','後半AT']
+    # 相手が自チームに打たれたシュート時間帯 = 相手チームの被シュート時間帯
+    opp_data = df_all[df_all['相手チーム名'] == opp_team]
+    shot_time_cols = {s: f'シュート{s}' for s in time_slots if f'シュート{s}' in df_all.columns}
+
+    if shot_time_cols:
+        time_vals = {s: opp_data[col].sum() for s, col in shot_time_cols.items()}
+        df_time = pd.DataFrame({'時間帯': list(time_vals.keys()), '被シュート数': list(time_vals.values())})
+        fig_time = px.bar(
+            df_time, x='時間帯', y='被シュート数',
+            color='被シュート数', color_continuous_scale='Reds',
+            title=f'{opp_team} の時間帯別被シュート数（多い時間帯が狙い目）',
+            height=380
+        )
+        avg_shot = df_time['被シュート数'].mean()
+        fig_time.add_hline(y=avg_shot, line_dash='dash', line_color='white', opacity=0.6,
+                           annotation_text=f'平均:{avg_shot:.0f}', annotation_font_color='white')
+        st.plotly_chart(fig_time, use_container_width=True)
+
+    # ===== レーダーチャート比較 =====
+    st.markdown("### 📡 自チーム強み vs 相手弱点 レーダーチャート")
+
+    radar_keys = ['CC/試合','シュート/試合','PA内シュート/試合','SP得点/試合','クロス得点/試合']
+    radar_opp  = ['被CC/試合','被シュート/試合','被PA進入/試合','被SP得点/試合','被クロス得点/試合']
+    radar_labels = ['CC','シュート','PA内シュート','SP得点','クロス得点']
+
+    # 正規化（リーグ最大値基準）
+    def normalize(val, key):
+        vals = [team_stats(t).get(key, 0) for t in all_team_list]
+        mx = max(vals) if max(vals) > 0 else 1
+        return round(val / mx * 100, 1)
+
+    my_vals  = [normalize(my_stats.get(k, 0), k)  for k in radar_keys]
+    opp_vals = [normalize(opp_stats.get(k, 0), k) for k in radar_opp]
+
+    fig_radar = go.Figure()
+    fig_radar.add_trace(go.Scatterpolar(
+        r=my_vals + my_vals[:1], theta=radar_labels + radar_labels[:1],
+        fill='toself', name=f'{my_team}（攻撃）',
+        line=dict(color='#3498db', width=3), opacity=0.7
+    ))
+    fig_radar.add_trace(go.Scatterpolar(
+        r=opp_vals + opp_vals[:1], theta=radar_labels + radar_labels[:1],
+        fill='toself', name=f'{opp_team}（守備弱点）',
+        line=dict(color='#e74c3c', width=3), opacity=0.7
+    ))
+    fig_radar.update_layout(
+        title=f'{my_team} の攻撃力 vs {opp_team} の守備弱点（重なるほど有効）',
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        height=500
+    )
+    st.plotly_chart(fig_radar, use_container_width=True)
+    st.caption("青（自チーム攻撃）と赤（相手守備弱点）が重なる指標ほど、その攻撃パターンが有効と考えられます")
