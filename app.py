@@ -447,10 +447,10 @@ else:
     st.caption(f"表示中: {', '.join(selected_teams)} ／ 第{selected_rounds[0]}節〜第{selected_rounds[1]}節")
 
 # ===== タブ =====
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14 = st.tabs([
     "📊 チーム比較", "⚽ シュート分析", "🎯 パス・ポゼッション", "🏃 選手分析", "📈 時系列トレンド",
     "🧠 AE・DE分析", "📦 PA進入分析", "🏃 パス詳細", "✂️ クロス分析", "🛡️ 守備分析",
-    "⏱️ APT（ボール保持）", "📋 チーム詳細レポート", "🆚 対戦前分析"
+    "⏱️ APT（ボール保持）", "📋 チーム詳細レポート", "🆚 対戦前分析", "📂 データ一覧"
 ])
 
 # ===== タブ1: チーム比較 =====
@@ -2177,3 +2177,134 @@ with tab13:
     )
     st.plotly_chart(fig_radar, use_container_width=True)
     st.caption("青（自チーム攻撃）と赤（相手守備弱点）が重なる指標ほど、その攻撃パターンが有効と考えられます")
+
+# ===== タブ14: データ一覧 =====
+with tab14:
+    st.markdown("## 📂 データ一覧")
+    st.caption("カテゴリと列を選んでデータを確認・ダウンロードできます")
+
+    # データソース選択
+    data_source = st.radio("データソース", ["チームデータ", "選手データ"], horizontal=True)
+
+    if data_source == "チームデータ":
+        df_base = df_team.copy()
+        base_cols = ['節', '日付', 'チーム名', '相手チーム名', '得点', '失点']
+    else:
+        df_base = df_player.copy()
+        base_cols = ['節', '日付', 'チーム名', '選手名', 'ポジション', '相手チーム名', '出場時間']
+
+    # カテゴリ定義
+    if data_source == "チームデータ":
+        categories = {
+            'シュート':       [c for c in df_base.columns if any(k in c for k in ['シュート','xG']) and 'パス' not in c and 'クロス' not in c and 'ドリブル' not in c],
+            'ゴール':         [c for c in df_base.columns if 'ゴール' in c or 'PA内' in c or 'PA外' in c or 'PK' in c or '直接FK' in c],
+            'パス':           [c for c in df_base.columns if 'パス' in c and 'シュート' not in c and 'ゴール' not in c],
+            'クロス':         [c for c in df_base.columns if 'クロス' in c and 'シュート' not in c and 'ゴール' not in c],
+            'ドリブル':       [c for c in df_base.columns if 'ドリブル' in c],
+            '守備':           [c for c in df_base.columns if any(k in c for k in ['タックル','クリア','ブロック','インターセプト','こぼれ球','ファウル'])],
+            'ボール保持':     [c for c in df_base.columns if any(k in c for k in ['保持','APT'])],
+            'セットプレー':   [c for c in df_base.columns if any(k in c for k in ['CK','PK','FK'])],
+            '時間帯':         [c for c in df_base.columns if any(k in c for k in ['0-15','16-30','31-45','46-60','61-75','76-90','前半AT','後半AT'])],
+            '移動・スプリント': [c for c in df_base.columns if any(k in c for k in ['移動','スプリント'])],
+            'PA進入':         [c for c in df_base.columns if 'PA進入' in c or 'ニアゾーン' in c or '30mライン' in c],
+        }
+    else:
+        categories = {
+            'シュート':   [c for c in df_base.columns if any(k in c for k in ['シュート','ゴール','ＰＡ'])],
+            'パス':       [c for c in df_base.columns if 'パス' in c or 'スルーパス' in c or 'ラストパス' in c or 'アシスト' in c],
+            'クロス':     [c for c in df_base.columns if 'クロス' in c],
+            'ドリブル':   [c for c in df_base.columns if 'ドリブル' in c],
+            '守備':       [c for c in df_base.columns if any(k in c for k in ['タックル','クリア','ブロック','インターセプト','こぼれ球','ファウル','空中戦'])],
+            'GK':         [c for c in df_base.columns if 'セーブ' in c or 'GK' in c],
+            '出場':       [c for c in df_base.columns if any(k in c for k in ['出場','プレー数','カード'])],
+            '移動・スプリント': [c for c in df_base.columns if any(k in c for k in ['移動','スプリント'])],
+        }
+
+    st.markdown("---")
+    col1, col2 = st.columns([1, 2])
+
+    with col1:
+        st.markdown("### 🗂️ カテゴリ選択")
+        selected_cats = st.multiselect(
+            "カテゴリ",
+            list(categories.keys()),
+            default=list(categories.keys())[:2]
+        )
+
+        # 選択カテゴリの列を集める
+        candidate_cols = []
+        for cat in selected_cats:
+            for c in categories.get(cat, []):
+                if c not in candidate_cols and c not in base_cols:
+                    candidate_cols.append(c)
+
+        st.markdown("### 📋 列選択")
+        selected_cols = st.multiselect(
+            f"表示する列（{len(candidate_cols)}列から選択）",
+            candidate_cols,
+            default=candidate_cols[:10]
+        )
+
+        st.markdown("### 🔧 オプション")
+        # チームフィルター（サイドバーとは別に絞り込める）
+        all_t = sorted(df_base['チーム名'].dropna().unique())
+        filter_teams = st.multiselect("チームで絞り込み", all_t, default=[], key='dl_teams')
+
+        # 選手データのみポジションフィルター
+        filter_pos = []
+        if data_source == "選手データ":
+            pos_list = sorted(df_base['ポジション'].dropna().unique())
+            filter_pos = st.multiselect("ポジション", pos_list, default=[])
+
+        # 節フィルター
+        rounds_all = sorted(df_base['節'].dropna().unique().astype(int))
+        filter_rounds = st.slider("節の範囲", int(min(rounds_all)), int(max(rounds_all)),
+                                   (int(min(rounds_all)), int(max(rounds_all))), key='dl_rounds')
+
+        # ソート
+        sort_col = st.selectbox("ソート列", ['節'] + selected_cols if selected_cols else ['節'], key='dl_sort')
+        sort_asc = st.checkbox("昇順", value=False, key='dl_asc')
+
+        # 集計オプション（チームデータのみ）
+        if data_source == "チームデータ":
+            aggregate = st.checkbox("チーム単位で集計（合計）", value=False)
+
+    with col2:
+        st.markdown("### 📊 データ表示")
+
+        # フィルタリング
+        df_show = df_base.copy()
+        df_show = df_show[(df_show['節'] >= filter_rounds[0]) & (df_show['節'] <= filter_rounds[1])]
+        if filter_teams:
+            df_show = df_show[df_show['チーム名'].isin(filter_teams)]
+        if filter_pos and data_source == "選手データ":
+            df_show = df_show[df_show['ポジション'].isin(filter_pos)]
+
+        # 表示列
+        show_cols = [c for c in base_cols if c in df_show.columns] + [c for c in selected_cols if c in df_show.columns]
+
+        if not selected_cols:
+            st.info("左のカテゴリ・列を選択してください")
+        else:
+            # 集計
+            if data_source == "チームデータ" and aggregate:
+                num_cols = [c for c in selected_cols if c in df_show.columns and df_show[c].dtype in ['float64','int64']]
+                df_disp = df_show.groupby('チーム名')[num_cols].sum().reset_index()
+                df_disp = df_disp.sort_values(sort_col if sort_col in df_disp.columns else df_disp.columns[0],
+                                               ascending=sort_asc)
+            else:
+                df_disp = df_show[show_cols].copy()
+                if sort_col in df_disp.columns:
+                    df_disp = df_disp.sort_values(sort_col, ascending=sort_asc)
+
+            st.caption(f"{len(df_disp)}行 × {len(df_disp.columns)}列")
+            st.dataframe(df_disp.reset_index(drop=True), use_container_width=True, height=600)
+
+            # CSVダウンロード
+            csv = df_disp.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                label="📥 CSVダウンロード",
+                data=csv,
+                file_name=f"data_export_{data_source}.csv",
+                mime='text/csv'
+            )
