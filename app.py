@@ -2267,7 +2267,9 @@ with tab14:
 
         # 集計オプション（チームデータのみ）
         if data_source == "チームデータ":
-            aggregate = st.checkbox("チーム単位で集計（合計）", value=False)
+            aggregate = True
+        else:
+            aggregate = st.checkbox("選手単位で集計（合計）", value=True)
 
     with col2:
         st.markdown("### 📊 データ表示")
@@ -2287,11 +2289,15 @@ with tab14:
             st.info("左のカテゴリ・列を選択してください")
         else:
             # 集計
-            if data_source == "チームデータ" and aggregate:
+            if aggregate:
+                group_col = 'チーム名' if data_source == "チームデータ" else ['選手名','チーム名','ポジション']
                 num_cols = [c for c in selected_cols if c in df_show.columns and df_show[c].dtype in ['float64','int64']]
-                df_disp = df_show.groupby('チーム名')[num_cols].sum().reset_index()
-                df_disp = df_disp.sort_values(sort_col if sort_col in df_disp.columns else df_disp.columns[0],
-                                               ascending=sort_asc)
+                if num_cols:
+                    df_disp = df_show.groupby(group_col)[num_cols].sum().reset_index()
+                    df_disp = df_disp.sort_values(sort_col if sort_col in df_disp.columns else df_disp.columns[0],
+                                                   ascending=sort_asc)
+                else:
+                    df_disp = df_show[show_cols].drop_duplicates().reset_index(drop=True)
             else:
                 df_disp = df_show[show_cols].copy()
                 if sort_col in df_disp.columns:
