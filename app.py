@@ -2308,9 +2308,84 @@ with tab14:
 
             # CSVダウンロード
             csv = df_disp.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button(
-                label="📥 CSVダウンロード",
-                data=csv,
-                file_name=f"data_export_{data_source}.csv",
-                mime='text/csv'
-            )
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button(
+                    label="📥 CSVダウンロード",
+                    data=csv,
+                    file_name=f"data_export_{data_source}.csv",
+                    mime='text/csv'
+                )
+            with col_dl2:
+                # PDF生成
+                try:
+                    import io
+                    from reportlab.lib.pagesizes import A4, landscape
+                    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                    from reportlab.lib.styles import ParagraphStyle
+                    from reportlab.lib import colors
+                    from reportlab.pdfbase import pdfmetrics
+                    from reportlab.pdfbase.ttfonts import TTFont
+                    import os
+
+                    # フォント登録（リポジトリ同梱 or システムフォント）
+                    font_candidates = [
+                        'NotoSansJP.ttf',
+                        '/usr/share/fonts/truetype/fonts-japanese-gothic.ttf',
+                        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+                    ]
+                    font_registered = False
+                    for fp in font_candidates:
+                        if os.path.exists(fp):
+                            try:
+                                pdfmetrics.registerFont(TTFont('JP', fp))
+                                font_registered = True
+                                break
+                            except:
+                                continue
+
+                    if font_registered:
+                        buf = io.BytesIO()
+                        doc = SimpleDocTemplate(buf, pagesize=landscape(A4),
+                                                leftMargin=20, rightMargin=20, topMargin=30, bottomMargin=20)
+                        title_style = ParagraphStyle('t', fontName='JP', fontSize=12)
+                        cell_style = ParagraphStyle('c', fontName='JP', fontSize=7)
+
+                        # テーブルデータ（長い文字列を折り返し）
+                        headers = df_disp.columns.tolist()
+                        rows = []
+                        for _, row in df_disp.iterrows():
+                            rows.append([Paragraph(str(v), cell_style) for v in row.tolist()])
+
+                        data_pdf = [[Paragraph(str(h), ParagraphStyle('h', fontName='JP', fontSize=7,
+                                                                       textColor=colors.white)) for h in headers]] + rows
+                        col_width = (landscape(A4)[0] - 40) / max(len(headers), 1)
+                        t = Table(data_pdf, colWidths=[col_width] * len(headers), repeatRows=1)
+                        t.setStyle(TableStyle([
+                            ('FONTNAME',   (0,0), (-1,-1), 'JP'),
+                            ('FONTSIZE',   (0,0), (-1,-1), 7),
+                            ('BACKGROUND', (0,0), (-1,0),  colors.HexColor('#2d5fa6')),
+                            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, colors.HexColor('#f5f7fa')]),
+                            ('GRID',       (0,0), (-1,-1), 0.3, colors.HexColor('#cccccc')),
+                            ('VALIGN',     (0,0), (-1,-1), 'MIDDLE'),
+                            ('TOPPADDING', (0,0), (-1,-1), 3),
+                            ('BOTTOMPADDING', (0,0), (-1,-1), 3),
+                        ]))
+
+                        story = [
+                            Paragraph(f"J2/J3 2026 {data_source}　{len(df_disp)}件", title_style),
+                            Spacer(1, 10),
+                            t
+                        ]
+                        doc.build(story)
+
+                        st.download_button(
+                            label="📄 PDFダウンロード",
+                            data=buf.getvalue(),
+                            file_name=f"data_export_{data_source}.pdf",
+                            mime='application/pdf'
+                        )
+                    else:
+                        st.warning("PDFフォントが見つかりません。GitHubに NotoSansJP.ttf を追加してください。")
+                except Exception as e:
+                    st.error(f"PDF生成エラー: {e}")
